@@ -19,7 +19,9 @@
           "boiler_hours": "Run hours per day",
           "boiler_min_temp": "Lägsta beredartemperatur",
           "boiler_max_temp": "Högsta beredartemperatur",
-          "extra_consumers": "Fler stora förbrukare (energisensorer)"
+          "extra_consumers": "Fler stora förbrukare (energisensorer)",
+          "ev_charger_kw": "EV charger power",
+          "shower_reheat_delay_h": "Water heater reheat delay after shower (h)"
         }
       },
       "tariff": {
@@ -58,7 +60,9 @@
           "boiler_hours": "Run hours per day",
           "boiler_min_temp": "Lägsta beredartemperatur",
           "boiler_max_temp": "Högsta beredartemperatur",
-          "extra_consumers": "Fler stora förbrukare (energisensorer)"
+          "extra_consumers": "Fler stora förbrukare (energisensorer)",
+          "ev_charger_kw": "EV charger power",
+          "shower_reheat_delay_h": "Water heater reheat delay after shower (h)"
         }
       },
       "tariff": {

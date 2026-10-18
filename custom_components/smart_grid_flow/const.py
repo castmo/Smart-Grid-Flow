@@ -21,6 +21,8 @@ CONF_BOILER_TEMP = "boiler_temp_entity"
 CONF_BOILER_HOURS = "boiler_hours"
 CONF_BOILER_MIN_TEMP = "boiler_min_temp"
 CONF_BOILER_MAX_TEMP = "boiler_max_temp"
+CONF_EV_KW = "ev_charger_kw"
+CONF_SHOWER_DELAY = "shower_reheat_delay_h"
 CONF_EXTRA_CONSUMERS = "extra_consumers"  # lista av energisensorer (kWh)
 
 # Konfiguration – avgifter (standard: Göteborg Energi)

@@ -21,7 +21,9 @@ from .const import (
     CONF_BOILER_TEMP,
     CONF_CLIMATE,
     CONF_EFFECT_PRICE,
+    CONF_EV_KW,
     CONF_EXTRA_CONSUMERS,
+    CONF_SHOWER_DELAY,
     CONF_FIXED_FEE,
     CONF_GRID_METER,
     CONF_HP_ENERGY,
@@ -101,6 +103,12 @@ def _device_schema(hass, d: dict[str, Any]) -> vol.Schema:
             ),
             vol.Required(CONF_BOILER_MAX_TEMP, default=d.get(CONF_BOILER_MAX_TEMP, 75)): sel.NumberSelector(
                 sel.NumberSelectorConfig(min=30, max=90, step=1, unit_of_measurement="°C", mode="box")
+            ),
+            vol.Required(CONF_EV_KW, default=d.get(CONF_EV_KW, 7.4)): sel.NumberSelector(
+                sel.NumberSelectorConfig(min=1, max=22, step=0.1, unit_of_measurement="kW", mode="box")
+            ),
+            vol.Required(CONF_SHOWER_DELAY, default=d.get(CONF_SHOWER_DELAY, 1)): sel.NumberSelector(
+                sel.NumberSelectorConfig(min=0, max=6, step=1, unit_of_measurement="h", mode="box")
             ),
             vol.Optional(
                 CONF_EXTRA_CONSUMERS, description={"suggested_value": d.get(CONF_EXTRA_CONSUMERS, [])}

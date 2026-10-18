@@ -108,6 +108,8 @@ class SmartGridFlowCard extends HTMLElement {
           <span><i class="dot dyr"></i>Dyr</span>
           <span><i class="line"></i>Planerat börvärde</span>
         </div>
+        <h3>Bästa tid att köra stora förbrukare</h3>
+        ${this._suit(a.suitability || {})}
         <h3>Förbrukning idag</h3>
         ${this._consumption(consumers)}
         <h3>Effektavgift (${peak.month || "–"})</h3>
@@ -211,6 +213,47 @@ class SmartGridFlowCard extends HTMLElement {
       <text x="${W - pr + 3}" y="${H - pb}" class="ax">0</text></svg>`;
   }
 
+  _hh(iso) {
+    return String(new Date(iso).getHours()).padStart(2, "0");
+  }
+
+  _strip(items, label, icon, best, tip) {
+    if (!items.length) return "";
+    const W = 420, pl = 4, pr = 4, H = 46;
+    const n = items.length, cw = (W - pl - pr) / n;
+    const now = Date.now();
+    const t0 = new Date(items[0].start).getTime();
+    let cells = "", ax = "";
+    items.forEach((it, i) => {
+      const t = new Date(it.start).getTime();
+      const x = pl + i * cw;
+      const past = t + 3600000 <= now;
+      cells += `<rect x="${x + 0.5}" y="4" width="${cw - 1}" height="26" rx="2"
+        fill="hsl(${Math.round(it.score * 1.2)},62%,46%)" opacity="${past ? 0.3 : 1}"><title>${tip(it)}</title></rect>`;
+      if (new Date(t).getHours() % 3 === 0)
+        ax += `<text x="${x}" y="${H - 4}" class="ax">${this._hh(it.start)}</text>`;
+    });
+    const nx = pl + ((now - t0) / 3600000) * cw;
+    const bst = best
+      ? `Bäst: <b>${this._hh(best.start)}–${this._hh(best.end)}</b>`
+      : "";
+    return `<div class="srow"><span>${icon} ${label}</span><span class="muted">${bst}</span></div>
+      <svg viewBox="0 0 ${W} ${H}" class="strip">${cells}
+        <line x1="${nx}" x2="${nx}" y1="0" y2="34" class="now"/>
+        <text x="${nx}" y="${H - 14}" class="ax" style="text-anchor:middle;fill:var(--primary-text-color)">nu</text>${ax}</svg>`;
+  }
+
+  _suit(s) {
+    if (!s.ev) return `<div class="muted">Väntar på elpriser…</div>`;
+    const ev = this._strip(s.ev, `Elbilsladdning (${this._fmt(s.ev_kw, 1)} kW)`, "🚗", s.best_ev_3h,
+      (it) => `${this._hh(it.start)}:00 – ${this._fmt(it.cost)} kr/kWh inkl. ev. effekttopp · lämplighet ${it.score}%`);
+    const sh = this._strip(s.shower, "Dusch", "🚿", s.best_shower,
+      (it) => `Dusch ${this._hh(it.start)}:00 → beredaren värms ca kl ${this._hh(it.reheat)}:00 (${this._fmt(it.cost)} kr/kWh) · lämplighet ${it.score}%`);
+    return `${ev}${sh}
+      <div class="muted">Grönt = billigt, rött = dyrt. Duschens energi förbrukas när beredaren värmer upp efteråt
+      (${s.shower_scheduled ? "enligt schemat för beredaren" : "ca " + s.shower_delay_h + " h efter duschen"}), så diagrammet visar priset vid uppvärmningen.</div>`;
+  }
+
   _consumption(consumers) {
     if (!consumers.length) return `<div class="muted">Inga energisensorer konfigurerade.</div>`;
     const max = Math.max(...consumers.map((c) => c.kwh_today || 0), 0.1);
@@ -290,6 +333,8 @@ class SmartGridFlowCard extends HTMLElement {
     .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;background:var(--c-mid)}
     .dot.billig{background:var(--c-low)} .dot.dyr{background:var(--c-high)}
     .line{display:inline-block;width:14px;height:0;border-top:2px solid var(--c-acc);margin-right:4px;vertical-align:middle}
+    .srow{display:flex;justify-content:space-between;margin-top:6px;font-size:.9em}
+    .strip{margin-bottom:2px}
     .controls{margin-top:8px}
     .modes{display:flex;gap:6px} .modes button{flex:1}
     button{border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);border-radius:8px;padding:6px 10px;cursor:pointer}

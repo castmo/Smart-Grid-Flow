@@ -20,6 +20,9 @@ så att komforten hålls till lägsta möjliga kostnad.
 - **Självlärande:** efter varje timme uppdateras två modeller (rekursiv minstakvadrat):
   husets värmeförlust/uppvärmning och värmepumpens förbrukning givet börvärde och utetemperatur.
 - **Varmvattenberedare:** kör de billigaste timmarna per dygn, med min/max-temperatur och legionellaskydd.
+- **Bästa tid att köra:** diagram (med markering för nu) över vilka timmar som är billigast för
+  elbilsladdning och dusch. Duschens energi förbrukas när beredaren värmer upp *efteråt*, så för dusch
+  visas priset vid uppvärmningstimmen (enligt beredarschemat om styrning är på, annars konfigurerbar fördröjning).
 - **Lovelace-kort** (registreras automatiskt): flödesbild, prisdiagram med planerat börvärde,
   förbrukning per förbrukare, effektavgift och modellstatus.
 - **Utbyggbart** för solceller, batteri och elbilsladdare (se `core/devices.py`).

@@ -25,7 +25,9 @@ from .const import (
     CONF_BOILER_TEMP,
     CONF_CLIMATE,
     CONF_EFFECT_PRICE,
+    CONF_EV_KW,
     CONF_EXTRA_CONSUMERS,
+    CONF_SHOWER_DELAY,
     CONF_FIXED_FEE,
     CONF_GRID_METER,
     CONF_HP_ENERGY,
@@ -59,6 +61,7 @@ from .core.prices import (
     price_levels,
     slot_at,
 )
+from .core.suitability import best_window, ev_suitability, shower_suitability
 from .core.scheduler import BoilerSettings, boiler_decision
 from .core.tariff import TariffConfig
 
@@ -304,6 +307,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._apply_hp_control(now, hvac, climate)
         await self._apply_boiler(now, tariff)
 
+        suit = self._suitability(now, tariff, t_out)
         fixed_hp_kw = self.consumers.get("heatpump", {}).get("power_kw", 0.0)
         data = {
             "now": now.isoformat(),
@@ -335,6 +339,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "target": self.runtime["target"],
             },
             "boiler": self.boiler_info,
+            "suitability": suit,
             "consumers": list(self.consumers.values()),
             "peak": {
                 "top": self.peak.top(),
@@ -354,6 +359,37 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
         }
         return data
+
+    def _suitability(self, now: datetime, tariff: TariffConfig, t_out: float | None) -> dict[str, Any]:
+        """Lämplighetsdiagram för elbilsladdning och dusch (hela dygnet inkl. imorgon)."""
+        if len(self.prices) < 2:
+            return {}
+        c = self.cfg
+        fb = t_out if t_out is not None else 5.0
+        steps = [
+            Step(s.start, tariff.total_price(s.spot), self._t_out_at(s.start, fb))
+            for s in self.prices
+        ]
+        ev_kw = float(c.get(CONF_EV_KW, 7.4))
+        delay = int(c.get(CONF_SHOWER_DELAY, 1))
+        other = {p.start: p.energy_kwh for p in (self.plan.steps if self.plan else [])}
+        opt = self._opt_settings(tariff)
+        sched = None
+        if self.runtime["boiler_control"] and self.boiler_info.get("schedule"):
+            sched = {dt_util.parse_datetime(x) for x in self.boiler_info["schedule"]}
+        ev = ev_suitability(
+            steps, ev_kw, other, opt.base_load_kw, opt.peak_threshold_kw, opt.effect_price_kr_kw
+        )
+        shower = shower_suitability(steps, sched, delay)
+        return {
+            "ev": ev,
+            "shower": shower,
+            "ev_kw": ev_kw,
+            "shower_delay_h": delay,
+            "shower_scheduled": sched is not None,
+            "best_ev_3h": best_window(ev, 3, now),
+            "best_shower": best_window(shower, 1, now),
+        }
 
     def _plan_attr(self) -> list[dict[str, Any]]:
         if not self.plan:

@@ -19,7 +19,9 @@
           "boiler_hours": "Önskade drifttimmar per dygn",
           "boiler_min_temp": "Lägsta beredartemperatur",
           "boiler_max_temp": "Högsta beredartemperatur",
-          "extra_consumers": "Fler stora förbrukare (energisensorer)"
+          "extra_consumers": "Fler stora förbrukare (energisensorer)",
+          "ev_charger_kw": "Elbilsladdarens effekt",
+          "shower_reheat_delay_h": "Beredarens uppvärmningsfördröjning efter dusch (h)"
         }
       },
       "tariff": {
@@ -58,7 +60,9 @@
           "boiler_hours": "Önskade drifttimmar per dygn",
           "boiler_min_temp": "Lägsta beredartemperatur",
           "boiler_max_temp": "Högsta beredartemperatur",
-          "extra_consumers": "Fler stora förbrukare (energisensorer)"
+          "extra_consumers": "Fler stora förbrukare (energisensorer)",
+          "ev_charger_kw": "Elbilsladdarens effekt",
+          "shower_reheat_delay_h": "Beredarens uppvärmningsfördröjning efter dusch (h)"
         }
       },
       "tariff": {

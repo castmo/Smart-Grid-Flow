@@ -115,3 +115,25 @@ def test_boiler():
     assert on and why == "min_temp"
     on, _, _ = boiler_decision(st[2].start, st, BoilerSettings(), temp=80)
     assert not on
+
+
+def test_suitability_ev_and_shower():
+    from core.suitability import best_window, ev_suitability, shower_suitability
+    st = steps([5, 4, 1, 1, 6, 7, 2, 2])
+    ev = ev_suitability(st, 7.4, {}, 0.5, 99, 0)
+    assert ev[2]["score"] == 100 and ev[5]["score"] == 0
+    # Dusch utan styrning: kostnad = pris vid h+1 -> timmen före en billig timme är bäst.
+    sh = shower_suitability(st, None, delay_h=1)
+    assert sh[1]["score"] == 100 and sh[1]["reheat"] == st[2].start.isoformat()
+    # Med schema: duschar man timme 4 värms vattnet först vid nästa schemalagda timme.
+    sh2 = shower_suitability(st, {st[6].start}, delay_h=1)
+    assert sh2[4]["reheat"] == st[6].start.isoformat()
+    w = best_window(ev, 2, T0)
+    assert w["start"] == st[2].start.isoformat()
+
+
+def test_ev_peak_penalty():
+    from core.suitability import ev_suitability
+    st = steps([1.0, 1.0])
+    ev = ev_suitability(st, 7.4, {st[0].start: 3.0}, 0.5, 5.0, 49)
+    assert ev[0]["cost"] > ev[1]["cost"] - 1e-9 and ev[0]["score"] < ev[1]["score"] or ev[0]["cost"] > ev[1]["cost"]
