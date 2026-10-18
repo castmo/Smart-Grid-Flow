@@ -1,0 +1,149 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Grid Flow – devices",
+        "description": "Välj din värmepump (t.ex. Mitsubishi WF-RAC) och övriga enheter. Fälten är förifyllda om WF-RAC hittades.",
+        "data": {
+          "area": "Price area",
+          "climate_entity": "Heat pump (climate)",
+          "indoor_temp_entity": "Indoor temperature",
+          "outdoor_temp_entity": "Outdoor temperature",
+          "heatpump_energy_entity": "Heat pump energy (kWh)",
+          "heatpump_max_kw": "Heat pump max electric power",
+          "weather_entity": "Weather forecast",
+          "grid_meter_entity": "Huvudmätare (W/kW eller kWh) för effektavgift",
+          "boiler_switch_entity": "Water heater switch",
+          "boiler_energy_entity": "Beredarens energi (kWh)",
+          "boiler_temp_entity": "Beredarens temperatur",
+          "boiler_hours": "Run hours per day",
+          "boiler_min_temp": "Lägsta beredartemperatur",
+          "boiler_max_temp": "Högsta beredartemperatur",
+          "extra_consumers": "Fler stora förbrukare (energisensorer)"
+        }
+      },
+      "tariff": {
+        "title": "Electricity price and fees",
+        "description": "Förifyllt med Göteborg Energi. Kontrollera mot din faktura/prislista. Spotpris hämtas automatiskt (elprisetjustnu.se).",
+        "data": {
+          "supplier_markup_ore": "Elhandlarens påslag (öre/kWh exkl. moms)",
+          "grid_transfer_ore": "Elnätets överföringsavgift (öre/kWh inkl. moms)",
+          "energy_tax_ore": "Energiskatt (öre/kWh inkl. moms)",
+          "effect_price_kr_kw": "Effektavgift (kr/kW och månad inkl. moms)",
+          "fixed_fee_kr_month": "Fast månadsavgift (kr inkl. moms)",
+          "vat": "Moms (0,25 = 25 %)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Smart Grid Flow är redan konfigurerad."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Devices",
+        "data": {
+          "area": "Price area",
+          "climate_entity": "Heat pump (climate)",
+          "indoor_temp_entity": "Indoor temperature",
+          "outdoor_temp_entity": "Outdoor temperature",
+          "heatpump_energy_entity": "Heat pump energy (kWh)",
+          "heatpump_max_kw": "Heat pump max electric power",
+          "weather_entity": "Weather forecast",
+          "grid_meter_entity": "Huvudmätare (W/kW eller kWh) för effektavgift",
+          "boiler_switch_entity": "Water heater switch",
+          "boiler_energy_entity": "Beredarens energi (kWh)",
+          "boiler_temp_entity": "Beredarens temperatur",
+          "boiler_hours": "Run hours per day",
+          "boiler_min_temp": "Lägsta beredartemperatur",
+          "boiler_max_temp": "Högsta beredartemperatur",
+          "extra_consumers": "Fler stora förbrukare (energisensorer)"
+        }
+      },
+      "tariff": {
+        "title": "Electricity price and fees",
+        "data": {
+          "supplier_markup_ore": "Elhandlarens påslag (öre/kWh exkl. moms)",
+          "grid_transfer_ore": "Elnätets överföringsavgift (öre/kWh inkl. moms)",
+          "energy_tax_ore": "Energiskatt (öre/kWh inkl. moms)",
+          "effect_price_kr_kw": "Effektavgift (kr/kW och månad inkl. moms)",
+          "fixed_fee_kr_month": "Fast månadsavgift (kr inkl. moms)",
+          "vat": "Moms (0,25 = 25 %)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "price_total": {
+        "name": "Total electricity price"
+      },
+      "price_spot": {
+        "name": "Spot price"
+      },
+      "price_level": {
+        "name": "Price level",
+        "state": {
+          "billig": "Billig",
+          "normal": "Normal",
+          "dyr": "Dyr"
+        }
+      },
+      "price_avg_today": {
+        "name": "Medelpris idag"
+      },
+      "hp_plan_setpoint": {
+        "name": "Planned setpoint"
+      },
+      "hp_plan_energy": {
+        "name": "Planerad förbrukning nästa timme"
+      },
+      "hp_plan_savings": {
+        "name": "Beräknad besparing (plan)"
+      },
+      "peak_billed": {
+        "name": "Debiterad effekt (snitt topp 3)"
+      },
+      "peak_cost": {
+        "name": "Effektavgift hittills"
+      },
+      "model_confidence": {
+        "name": "Modellens säkerhet"
+      },
+      "model_time_constant": {
+        "name": "Husets tidskonstant"
+      },
+      "overview": {
+        "name": "Overview"
+      }
+    },
+    "switch": {
+      "hp_control": {
+        "name": "Control heat pump"
+      },
+      "boiler_control": {
+        "name": "Control water heater"
+      }
+    },
+    "select": {
+      "mode": {
+        "name": "Optimization mode"
+      }
+    },
+    "number": {
+      "target": {
+        "name": "Target indoor temperature"
+      },
+      "comfort_min": {
+        "name": "Lägsta komforttemperatur"
+      },
+      "setpoint_min": {
+        "name": "Lägsta börvärde"
+      },
+      "setpoint_max": {
+        "name": "Högsta börvärde"
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+views:
+  - title: Energi
+    path: energi
+    icon: mdi:flash
+    cards:
+      - type: custom:smart-grid-flow-card

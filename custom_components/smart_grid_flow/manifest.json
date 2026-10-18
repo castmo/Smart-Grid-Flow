@@ -1,0 +1,14 @@
+{
+  "domain": "smart_grid_flow",
+  "name": "Smart Grid Flow",
+  "codeowners": ["@castmo"],
+  "config_flow": true,
+  "dependencies": ["http", "frontend"],
+  "after_dependencies": ["weather", "recorder"],
+  "documentation": "https://github.com/castmo/Smart-Grid-Flow",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/castmo/Smart-Grid-Flow/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
