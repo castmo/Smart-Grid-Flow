@@ -48,16 +48,30 @@ async def _async_register_lovelace_card(hass: HomeAssistant) -> None:
     # 3. Lägg till i Home Assistants frontend-moduler
     frontend.add_extra_js_url(hass, url_with_version)
 
-    # 4. Lägg automatiskt till i Dashboard Resources (om Lovelace körs i lagringsläge)
+    # 4. Lägg automatiskt till/uppdatera i Dashboard Resources (om Lovelace körs i lagringsläge)
     if "lovelace" in hass.data:
         ll = hass.data["lovelace"]
         res = getattr(ll, "resources", None)
-        if res and hasattr(res, "async_items") and hasattr(res, "async_create_item"):
+        if res and hasattr(res, "async_items"):
             try:
                 if not getattr(res, "loaded", True):
                     await res.async_load()
-                existing = [item.get("url", "").split("?")[0] for item in res.async_items()]
-                if CARD_URL not in existing and "/local/smart_grid_flow/smart-grid-flow-card.js" not in existing:
+                items = list(res.async_items())
+                found = False
+                for item in items:
+                    u = item.get("url", "")
+                    base_u = u.split("?")[0]
+                    if base_u in (CARD_URL, "/local/smart_grid_flow/smart-grid-flow-card.js"):
+                        found = True
+                        if u != url_with_version and hasattr(res, "async_update_item"):
+                            await res.async_update_item(
+                                item["id"], {"res_type": "module", "url": url_with_version}
+                            )
+                            _LOGGER.info(
+                                "Smart Grid Flow: Uppdaterade Lovelace-resurs till %s",
+                                url_with_version,
+                            )
+                if not found and hasattr(res, "async_create_item"):
                     await res.async_create_item({"res_type": "module", "url": url_with_version})
                     _LOGGER.info("Smart Grid Flow: Registrerade Lovelace-resurs %s", url_with_version)
             except Exception as err:
