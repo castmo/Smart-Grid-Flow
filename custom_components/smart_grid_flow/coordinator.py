@@ -119,6 +119,8 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_opt: datetime | None = None
         self._force_opt = True
         self._last_sp_change: datetime | None = None
+        self._last_applied_hour: datetime | None = None
+        self._last_applied_sp: float | None = None
         self._last_mode_switch: datetime | None = None
         self._last_hot: datetime | None = None
         self._boiler_last: bool | None = None
@@ -169,6 +171,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_set_runtime(self, key: str, value: Any) -> None:
         self.runtime[key] = value
         self._force_opt = True
+        self._last_applied_hour = None
         self.schedule_save()
         await self.async_request_refresh()
 
@@ -610,6 +613,17 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         thr = self.peak.threshold(dt_util.now())
         if thr <= 0:
             thr = 2.5
+
+        cur_sp = None
+        climate = self._state(self.cfg.get(CONF_CLIMATE))
+        if climate is not None:
+            sp_val = climate.attributes.get("temperature")
+            if sp_val is not None:
+                try:
+                    cur_sp = float(sp_val)
+                except (ValueError, TypeError):
+                    pass
+
         is_away = r.get("mode") == "away" or r.get("away_mode", False)
         if is_away:
             away_t = float(r.get("away_target", 12.0))
@@ -624,6 +638,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 peak_threshold_kw=thr,
                 base_load_kw=base,
                 is_cooling=False,
+                current_setpoint=cur_sp,
             )
         return Settings(
             target=float(r["target"]),
@@ -636,6 +651,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             peak_threshold_kw=thr,
             base_load_kw=base,
             is_cooling=False,
+            current_setpoint=cur_sp,
         )
 
     async def _maybe_optimize(
@@ -769,15 +785,39 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         cur = climate.attributes.get("temperature")
-        if cur is not None and abs(float(cur) - want) < 0.25:
+        cur_val = float(cur) if cur is not None else None
+
+        # 1. Dödband: Om börvärdet redan matchar (mindre än 0.4°C skillnad), gör ingenting
+        if cur_val is not None and abs(cur_val - want) < 0.4:
             return
-        if (
-            self._last_sp_change
-            and (now - self._last_sp_change) < timedelta(minutes=30)
-            and cur is not None
-            and abs(float(cur) - want) < 1.0
-        ):
-            return
+
+        # 2. Ramp-begränsning: Tillåt aldrig ett större hopp än max_ramp i ett enda steg
+        max_ramp = cfg.max_setpoint_change_per_hour or 1.0
+        if cur_val is not None:
+            if want - cur_val > max_ramp:
+                want = round_setpoint(cur_val + max_ramp, cfg)
+            elif cur_val - want > max_ramp:
+                want = round_setpoint(cur_val - max_ramp, cfg)
+
+        # 3. Tim-synkronisering och skydd mot upprepade ändringar inom samma timme:
+        # Elpriset ändras per heltimme. Värmepumpen ska INTE ändra börvärde var 5:e minut.
+        current_hour = floor_hour(now)
+        is_new_hour = self._last_applied_hour is None or current_hour != self._last_applied_hour
+        user_override = self._force_opt
+
+        # Säkerhetsingrepp om innetemperaturen avviker kraftigt från komfortmålet:
+        t_in = self._num(self.cfg.get(CONF_INDOOR_TEMP))
+        emergency = False
+        if t_in is not None and hvac in ("heat", "heat_cool", "auto") and not is_away:
+            if float(t_in) < cfg.comfort_min - 1.0 and cur_val is not None and want > cur_val:
+                emergency = True
+
+        # Om det inte är ny timme, användarändring eller nödläge:
+        if not (is_new_hour or user_override or emergency):
+            # Ändra INTE om det gått mindre än 45 minuter sedan förra ändringen
+            if self._last_sp_change and (now - self._last_sp_change) < timedelta(minutes=45):
+                return
+
         await self.hass.services.async_call(
             "climate",
             "set_temperature",
@@ -785,7 +825,14 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             blocking=True,
         )
         self._last_sp_change = now
-        _LOGGER.debug("Satte börvärde %.1f", want)
+        self._last_applied_hour = current_hour
+        self._last_applied_sp = want
+        _LOGGER.info(
+            "Smart Grid Flow satte värmepumpens börvärde till %.1f°C (tidigare: %s, läge: %s)",
+            want,
+            f"{cur_val:.1f}°C" if cur_val is not None else "okänt",
+            cfg.mode.value if hasattr(cfg.mode, "value") else str(cfg.mode),
+        )
 
     async def _apply_boiler(self, now: datetime, tariff: TariffConfig) -> None:
         c = self.cfg

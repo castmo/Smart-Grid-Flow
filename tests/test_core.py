@@ -149,3 +149,23 @@ def test_away_mode():
     assert all(p.t_in >= 9.0 for p in plan.steps)
 
 
+def test_smooth_ramp_rate():
+    prices = [3.0] * 6 + [0.3] * 6 + [3.0] * 12
+    cfg = Settings(target=21.0, mode=Mode.BALANCED, current_setpoint=21.0, max_setpoint_change_per_hour=1.0)
+    plan = optimize(21.0, steps(prices, t_out=2.0), ThermalModel(), EnergyModel(), cfg)
+    prev = cfg.current_setpoint
+    for p in plan.steps:
+        assert abs(p.setpoint - prev) <= 1.0 + 1e-9
+        prev = p.setpoint
+
+
+def test_smooth_bounded_setpoints():
+    prices = [5.0] * 6 + [0.1] * 6 + [5.0] * 12
+    cfg = Settings(target=21.0, mode=Mode.BALANCED, setpoint_min=18.0, setpoint_max=26.0)
+    plan = optimize(21.0, steps(prices, t_out=2.0), ThermalModel(), EnergyModel(), cfg)
+    for p in plan.steps:
+        assert p.setpoint >= 19.0, f"Börvärde {p.setpoint} för lågt (bör inte gå ner till 18°C)"
+        assert p.setpoint <= 23.5, f"Börvärde {p.setpoint} för högt (bör inte rusa till 25-26°C)"
+
+
+

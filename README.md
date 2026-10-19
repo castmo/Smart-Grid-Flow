@@ -4,8 +4,8 @@ Smart elstyrning för Home Assistant, på svenska. Visar värmepump, varmvattenb
 elpriser (nu och kommande) och förbrukning per stor förbrukare – och styr värmepumpen
 så att komforten hålls till lägsta möjliga kostnad.
 
-> **Status: 0.1.2.** Logiken (pris, modell, optimering, effekttoppar, säsongsväxling)
-> är enhetstestad. Kortet registreras automatiskt som resurs i Home Assistant.
+> **Status: 0.1.3.** Mjuk och energieffektiv värmepumpsstyrning med rampbegränsning,
+> timsynkronisering och dämpning mot onödig pendling.
 
 ![Smart Grid Flow – exempelvy](docs/demo/screenshot.png)
 
@@ -13,13 +13,17 @@ så att komforten hålls till lägsta möjliga kostnad.
 
 ## Funktioner
 
+- **Mjuk & energieffektiv värmepumpsstyrning:** Skyddar kompressorn och optimerar verkningsgraden (COP):
+  - *Rampbegränsning:* Ändrar börvärdet med max 1,0–1,5 °C per timme (inga plötsliga hopp mellan 18 °C och 26 °C).
+  - *Timsynkronisering:* Börvärdet uppdateras per heltimme i takt med elpriset och hålls stabilt under timmen.
+  - *Anti-cyklingsspärr:* Minst 45 minuter mellan automatiska börvärdesjusteringar så invertern hinner stabilisera sig.
+  - *Dämpat sökområde:* Håller börvärdet samlat kring komfortmålet (t.ex. ±1,5–2,0 °C vid 21 °C) för hög värmefaktor.
 - **Elpris med alla avgifter:** spotpris (elprisetjustnu.se, elområde SE1–SE4) + elhandlarpåslag
   + moms + nätens överföringsavgift + energiskatt. Standardvärden för **Göteborg Energi Elnät**
   (villa), alla justerbara i konfigurationen.
 - **Effekttariff:** följer månadens tre högsta timmedeleffekter (olika dygn) via en huvudmätare
   och håller värmepumpen under tröskeln när det lönar sig.
-- **Värmepumpsstyrning** med väderprognos (utetemperatur per timme), fyra lägen:
-  *Lägsta pris*, *Balanserad*, *Stabil temperatur* samt *Bortaläge*.
+- **Fyra optimeringslägen:** *Lägsta pris*, *Balanserad*, *Stabil temperatur* samt *Bortaläge*.
 - **Termostatkort med tre temperaturer:** Visar *Aktuell innetemperatur* (mätning), *Önskad temperatur*
   (justerbar med `+`/`−`) och *Inställt på pumpen* (faktiskt börvärde på WF-RAC samt plan nästa timme).
 - **Bortaläge (Bortaläge / Away mode):** Tvingar värmepumpen till värmeläge och sänker börvärdet till

@@ -29,6 +29,30 @@ MODE_WEIGHTS: dict[Mode, tuple[float, float, float]] = {
     Mode.AWAY: (0.02, 12.0, 0.4),
 }
 
+# Max tillåten börvärdesavvikelse från target (°C) för att undvika extrema hopp (18-26°C)
+MODE_MAX_OFFSET: dict[Mode, float] = {
+    Mode.PRICE: 2.5,
+    Mode.BALANCED: 2.0,
+    Mode.STABLE: 1.5,
+    Mode.AWAY: 2.0,
+}
+
+# Max tillåten ändring per timme (°C/h) för mjuk drift och hög verkningsgrad
+MODE_RAMP_LIMIT: dict[Mode, float] = {
+    Mode.PRICE: 1.5,
+    Mode.BALANCED: 1.0,
+    Mode.STABLE: 0.5,
+    Mode.AWAY: 1.0,
+}
+
+# Dämpningsvikt för (börvärde - önskad temperatur)² så kompressorn arbetar i sitt mest effektiva intervall
+MODE_EFFORT_WEIGHT: dict[Mode, float] = {
+    Mode.PRICE: 0.05,
+    Mode.BALANCED: 0.15,
+    Mode.STABLE: 0.50,
+    Mode.AWAY: 0.02,
+}
+
 
 @dataclass
 class Settings:
@@ -44,6 +68,9 @@ class Settings:
     base_load_kw: float = 0.5  # husets övriga last (för effektberäkning)
     t_grid_step: float = 0.1
     is_cooling: bool = False  # True om vi kör kyla (sommartid)
+    current_setpoint: float | None = None  # pumpens nuvarande börvärde (för mjuk ramp från start)
+    max_setpoint_change_per_hour: float | None = None  # max ändring per timme (°C/h)
+
 
 
 @dataclass
@@ -114,7 +141,18 @@ def optimize(
     if n == 0:
         return Plan()
     w_t, w_lo, w_hi = MODE_WEIGHTS[cfg.mode]
-    sps = _frange(cfg.setpoint_min, cfg.setpoint_max, cfg.setpoint_step)
+    w_eff = MODE_EFFORT_WEIGHT.get(cfg.mode, 0.15)
+    max_off = MODE_MAX_OFFSET.get(cfg.mode, 2.0)
+
+    # Mjuka börvärdesgränser runt måltemperatur för att förhindra extrema hopp (18-26°C)
+    eff_min = max(cfg.setpoint_min, cfg.target - max_off)
+    eff_max = min(
+        cfg.setpoint_max,
+        cfg.target + (max_off + 0.5 if cfg.mode != Mode.STABLE else max_off + 1.0),
+    )
+    if eff_min > eff_max:
+        eff_min = eff_max = cfg.target
+    sps = _frange(eff_min, eff_max, cfg.setpoint_step)
 
     g = cfg.t_grid_step
     t_lo = min(cfg.comfort_min, t_in, cfg.target) - 4.0
@@ -165,7 +203,8 @@ def optimize(
                     i0 = int(f)
                     fr = f - i0
                     v2 = V[i0] * (1 - fr) + V[i0 + 1] * fr
-                cost = st.price * e + base_c + v2
+                # Kostnad inkluderar insats-/dämpningsstraff för hög COP och jämn gång
+                cost = st.price * e + base_c + w_eff * ((sp - cfg.target) ** 2) + v2
                 if cfg.effect_price_kr_kw > 0:
                     over = e + cfg.base_load_kw - cfg.peak_threshold_kw
                     if over > 0:
@@ -178,16 +217,34 @@ def optimize(
         e_cache.append(e_row)
         V = newV
 
-    # Framåtsimulering från verklig starttemperatur.
+    # Framåtsimulering från verklig starttemperatur med rampbegränsning.
     plan = Plan()
     t = t_in
+    prev_sp = cfg.current_setpoint
+    max_ramp = cfg.max_setpoint_change_per_hour
+    if max_ramp is None or max_ramp <= 0:
+        max_ramp = MODE_RAMP_LIMIT.get(cfg.mode, 1.0)
+
     for k, st in enumerate(steps):
         f = (t - t_lo) / g
         i = min(max(int(round(f)), 0), m - 1)
-        sp = sps[policy[k][i]]
+        target_sp = sps[policy[k][i]]
+
+        # Begränsa ändringshastigheten från föregående timmes börvärde
+        if prev_sp is not None:
+            if target_sp - prev_sp > max_ramp:
+                sp = round_setpoint(prev_sp + max_ramp, cfg)
+            elif prev_sp - target_sp > max_ramp:
+                sp = round_setpoint(prev_sp - max_ramp, cfg)
+            else:
+                sp = target_sp
+        else:
+            sp = target_sp
+
         e = energy.predict(sp, t, st.t_out)
         plan.steps.append(PlanStep(st.start, sp, t, e, st.price, st.price * e, st.t_out))
         t = t + thermal.predict_delta(t, st.t_out, e)
+        prev_sp = sp
     plan.cost = sum(p.cost for p in plan.steps)
 
     # Referens: lägsta konstanta börvärde som ger minst lika hög medeltemperatur
