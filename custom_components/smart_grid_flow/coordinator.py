@@ -25,7 +25,13 @@ from .const import (
     CONF_BOILER_TEMP,
     CONF_CLIMATE,
     CONF_EFFECT_PRICE,
+    CONF_BATTERY_INVERT,
+    CONF_BATTERY_POWER,
+    CONF_BATTERY_SOC,
     CONF_EV_KW,
+    CONF_EV_POWER,
+    CONF_GRID_INVERT,
+    CONF_SOLAR_POWER,
     CONF_EXTRA_CONSUMERS,
     CONF_SHOWER_DELAY,
     CONF_FIXED_FEE,
@@ -307,6 +313,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._apply_hp_control(now, hvac, climate)
         await self._apply_boiler(now, tariff)
 
+        flow = self._flow()
         suit = self._suitability(now, tariff, t_out)
         fixed_hp_kw = self.consumers.get("heatpump", {}).get("power_kw", 0.0)
         data = {
@@ -340,6 +347,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             "boiler": self.boiler_info,
             "suitability": suit,
+            "flow": flow,
             "consumers": list(self.consumers.values()),
             "peak": {
                 "top": self.peak.top(),
@@ -359,6 +367,55 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
         }
         return data
+
+    def _power_kw(self, eid: str | None, invert: bool = False) -> float | None:
+        st = self._state(eid)
+        if st is None:
+            return None
+        try:
+            v = float(st.state)
+        except ValueError:
+            return None
+        unit = st.attributes.get("unit_of_measurement")
+        if unit == "W":
+            v /= 1000.0
+        elif unit not in ("kW",):
+            return None  # energimätare (kWh) duger inte som momentan effekt
+        return -v if invert else v
+
+    def _flow(self) -> dict[str, Any]:
+        """Aktuella effektflöden (kW). Elnät: + = import. Batteri: + = laddning."""
+        c = self.cfg
+        grid = self._power_kw(c.get(CONF_GRID_METER), bool(c.get(CONF_GRID_INVERT)))
+        solar = self._power_kw(c.get(CONF_SOLAR_POWER))
+        batt = self._power_kw(c.get(CONF_BATTERY_POWER), bool(c.get(CONF_BATTERY_INVERT)))
+        if batt is not None and not c.get(CONF_BATTERY_INVERT):
+            pass  # + = laddning är standard
+        soc = self._num(c.get(CONF_BATTERY_SOC))
+        ev = self._power_kw(c.get(CONF_EV_POWER))
+        hp = self.consumers.get("heatpump", {}).get("power_kw", 0.0)
+        boiler = self.consumers.get("boiler", {}).get("power_kw", 0.0)
+        solar_v = max(solar or 0.0, 0.0)
+        batt_v = batt or 0.0
+        known = hp + boiler + (ev or 0.0)
+        if grid is not None:
+            load = grid + solar_v - batt_v
+        else:
+            load = known
+            grid = load + batt_v - solar_v
+        other = max(load - known, 0.0)
+        return {
+            "grid": round(grid, 3),
+            "solar": None if solar is None else round(solar_v, 3),
+            "battery": None if batt is None else round(batt_v, 3),
+            "soc": soc,
+            "ev": None if ev is None else round(ev, 3),
+            "heatpump": round(hp, 3),
+            "boiler": round(boiler, 3),
+            "other": round(other, 3),
+            "load": round(load, 3),
+            "grid_known": self._power_kw(c.get(CONF_GRID_METER)) is not None,
+        }
 
     def _suitability(self, now: datetime, tariff: TariffConfig, t_out: float | None) -> dict[str, Any]:
         """Lämplighetsdiagram för elbilsladdning och dusch (hela dygnet inkl. imorgon)."""

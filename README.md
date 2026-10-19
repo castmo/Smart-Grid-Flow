@@ -8,6 +8,10 @@ så att komforten hålls till lägsta möjliga kostnad.
 > är enhetstestad, men integrationen är ännu inte provkörd i en riktig Home Assistant.
 > Börja gärna med styrning *avstängd* och jämför planen med verkligheten.
 
+![Smart Grid Flow – exempelvy](docs/demo/screenshot.png)
+
+*Exempelbild med påhittad data, renderad av det riktiga kortet. Generera om med `python docs/demo/make_sample.py`.*
+
 ## Funktioner
 
 - **Elpris med alla avgifter:** spotpris (elprisetjustnu.se, elområde SE1–SE4) + elhandlarpåslag
@@ -25,6 +29,9 @@ så att komforten hålls till lägsta möjliga kostnad.
   visas priset vid uppvärmningstimmen (enligt beredarschemat om styrning är på, annars konfigurerbar fördröjning).
 - **Lovelace-kort** (registreras automatiskt): flödesbild, prisdiagram med planerat börvärde,
   förbrukning per förbrukare, effektavgift och modellstatus.
+- **Animerat effektflöde:** elnät (köper/säljer), solceller, batteri (laddar/laddar ur, laddnivå),
+  värmepump, beredare, elbil och övrig last. Linjerna animeras i flödesriktningen och snabbare vid högre effekt.
+  Solceller/batteri/elbil visas när du anger deras effektsensorer (W/kW) i konfigurationen.
 - **Utbyggbart** för solceller, batteri och elbilsladdare (se `core/devices.py`).
 
 ## Hur kopplas värmepumpen? (Mitsubishi WF-RAC)

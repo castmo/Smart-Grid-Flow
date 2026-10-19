@@ -98,7 +98,7 @@ class SmartGridFlowCard extends HTMLElement {
             ${this._fmt(price.total)} kr/kWh · ${price.level || "–"}
           </div>
         </div>
-        ${this._flow(hp, boiler, consumers)}
+        ${this._flow(hp, boiler, consumers, a.flow)}
         ${this._controls(hp)}
         <h3>Elpris – ${price.tomorrow_available ? "idag & imorgon" : "idag"}</h3>
         ${this._chart(a.prices || [], price, hp.plan || [])}
@@ -120,43 +120,58 @@ class SmartGridFlowCard extends HTMLElement {
     this._bind();
   }
 
-  _flow(hp, boiler, consumers) {
-    const list = consumers.length
-      ? consumers
-      : [{ key: "heatpump", name: "Värmepump", power_kw: 0 }];
-    const W = 420;
-    const rowH = Math.max(70, 190 / list.length);
-    const H = Math.max(190, rowH * list.length + 10);
-    const hub = { x: 190, y: H / 2 };
-    const grid = { x: 40, y: H / 2 };
-    const total = list.reduce((s, c) => s + (c.power_kw || 0), 0);
-    const dur = (kw) => Math.max(0.6, Math.min(5, 3 / Math.max(kw, 0.05))).toFixed(2);
-    const line = (x1, y1, x2, y2, kw, cls) =>
-      `<path d="M${x1},${y1} C${(x1 + x2) / 2},${y1} ${(x1 + x2) / 2},${y2} ${x2},${y2}"
-         class="wire ${kw > 0.05 ? "active " + cls : ""}" style="animation-duration:${dur(kw)}s"/>`;
+  _flow(hp, boiler, consumers, f) {
+    f = f || {};
+    const W = 420, H = 335;
+    const hub = { x: 210, y: 150 };
+    const has = (k) => f[k] !== null && f[k] !== undefined;
+    const fmt = (v) => this._fmt(Math.abs(v || 0), 2) + " kW";
+    // Källor/lagring (övre raden) och förbrukare (nedre raden).
+    const top = [];
+    if (has("solar")) top.push({ k: "solar", ico: "☀️", name: "Solceller", kw: f.solar, dir: "in" });
+    top.push({ k: "grid", ico: "🔌", name: "Elnät", kw: f.grid, dir: f.grid >= 0 ? "in" : "out",
+      sub: f.grid >= 0 ? "köper" : "säljer" });
+    if (has("battery")) top.push({ k: "battery", ico: "🔋", name: "Batteri", kw: f.battery,
+      dir: f.battery > 0 ? "out" : "in", sub: (f.battery > 0.05 ? "laddar" : f.battery < -0.05 ? "laddar ur" : "vilar") +
+      (has("soc") ? ` · ${this._fmt(f.soc, 0)}%` : "") });
+    const bot = [];
+    let sub = "";
+    if (hp.indoor != null) sub = `${this._fmt(hp.indoor, 1)}° → ${this._fmt(hp.setpoint, 1)}°`;
+    bot.push({ k: "heatpump", ico: "🌡️", name: "Värmepump", kw: f.heatpump, sub });
+    bot.push({ k: "boiler", ico: "🚿", name: "Beredare", kw: f.boiler,
+      sub: boiler.temp != null ? `${this._fmt(boiler.temp, 0)}°C` : boiler.on ? "på" : "" });
+    if (has("ev")) bot.push({ k: "ev", ico: "🚗", name: "Elbil", kw: f.ev });
+    bot.push({ k: "other", ico: "🏠", name: "Övrigt", kw: f.other });
+    const place = (arr, y) => arr.map((n, i) => ({ ...n, x: (W / (arr.length + 1)) * (i + 1), y }));
+    const T = place(top, 62), B = place(bot, 262);
+    const dur = (kw) => Math.max(0.5, Math.min(4, 2.4 / Math.max(Math.abs(kw), 0.05))).toFixed(2);
+    // Banan ritas alltid i flödesriktningen så att animationen följer strömmen.
+    const wire = (from, to, kw, cls) => {
+      const act = Math.abs(kw) > 0.05;
+      const my = (from.y + to.y) / 2;
+      return `<path d="M${from.x},${from.y} C${from.x},${my} ${to.x},${my} ${to.x},${to.y}"
+        class="wire ${act ? "active " + cls : ""}" style="animation-duration:${dur(kw)}s"/>`;
+    };
     let svg = `<svg viewBox="0 0 ${W} ${H}" class="flow">`;
-    svg += line(grid.x + 24, grid.y, hub.x - 24, hub.y, total, "grid");
-    svg += `<g><circle cx="${grid.x}" cy="${grid.y}" r="26" class="node"/>
-            <text x="${grid.x}" y="${grid.y + 6}" class="ico">🔌</text>
-            <text x="${grid.x}" y="${grid.y + 44}" class="lbl">Elnät</text>
-            <text x="${grid.x}" y="${grid.y + 57}" class="sub">${this._fmt(total, 2)} kW</text></g>`;
-    svg += `<g><circle cx="${hub.x}" cy="${hub.y}" r="24" class="node hub"/>
-            <text x="${hub.x}" y="${hub.y + 6}" class="ico">🏠</text></g>`;
-    list.forEach((c, i) => {
-      const x = 340;
-      const y = rowH * i + rowH / 2 + 5;
-      const kw = c.power_kw || 0;
-      let sub = `${this._fmt(kw, 2)} kW`;
-      if (c.key === "heatpump" && hp.indoor != null)
-        sub += ` · ${this._fmt(hp.indoor, 1)}° → ${this._fmt(hp.setpoint, 1)}°`;
-      if (c.key === "boiler")
-        sub += boiler.temp != null ? ` · ${this._fmt(boiler.temp, 0)}°C` : boiler.on ? " · på" : " · av";
-      const isSource = c.key === "solar";
-      svg += line(isSource ? x - 24 : hub.x + 24, isSource ? y : hub.y, isSource ? hub.x + 24 : x - 24, isSource ? hub.y : y, kw, c.key);
-      svg += `<g><circle cx="${x}" cy="${y}" r="24" class="node ${kw > 0.05 ? "on" : ""}"/>
-              <text x="${x}" y="${y + 6}" class="ico">${SGF_ICONS[c.key] || "⚡"}</text>
-              <text x="${x}" y="${y + 40}" class="lbl">${c.name || c.key}</text>
-              <text x="${x}" y="${y + 53}" class="sub">${sub}</text></g>`;
+    T.forEach((n) => {
+      const hubTop = { x: hub.x, y: hub.y - 26 }, nb = { x: n.x, y: n.y + 26 };
+      svg += n.dir === "in" ? wire(nb, hubTop, n.kw, n.k) : wire(hubTop, nb, n.kw, n.k);
+    });
+    B.forEach((n) => {
+      svg += wire({ x: hub.x, y: hub.y + 26 }, { x: n.x, y: n.y - 26 }, n.kw, n.k);
+    });
+    svg += `<circle cx="${hub.x}" cy="${hub.y}" r="26" class="node hub"/>
+      <text x="${hub.x}" y="${hub.y + 2}" class="ico">🏠</text>
+      <text x="${hub.x}" y="${hub.y + 16}" class="sub">${fmt(f.load)}</text>`;
+    [...T, ...B].forEach((n) => {
+      const on = Math.abs(n.kw || 0) > 0.05;
+      const up = n.y < hub.y;
+      const ly = up ? n.y - 42 : n.y + 42;
+      svg += `<g><circle cx="${n.x}" cy="${n.y}" r="24" class="node ${on ? "on " + n.k : ""}"/>
+        <text x="${n.x}" y="${n.y + 7}" class="ico">${n.ico}</text>
+        <text x="${n.x}" y="${ly}" class="lbl">${n.name}</text>
+        <text x="${n.x}" y="${up ? n.y - 30 : ly + 12}" class="sub">${fmt(n.kw)}${up && n.sub ? " · " + n.sub : ""}</text>
+        ${!up && n.sub ? `<text x="${n.x}" y="${ly + 24}" class="sub">${n.sub}</text>` : ""}</g>`;
     });
     return svg + `</svg>`;
   }
@@ -219,7 +234,7 @@ class SmartGridFlowCard extends HTMLElement {
 
   _strip(items, label, icon, best, tip) {
     if (!items.length) return "";
-    const W = 420, pl = 4, pr = 4, H = 46;
+    const W = 420, pl = 4, pr = 4, H = 54;
     const n = items.length, cw = (W - pl - pr) / n;
     const now = Date.now();
     const t0 = new Date(items[0].start).getTime();
@@ -228,10 +243,10 @@ class SmartGridFlowCard extends HTMLElement {
       const t = new Date(it.start).getTime();
       const x = pl + i * cw;
       const past = t + 3600000 <= now;
-      cells += `<rect x="${x + 0.5}" y="4" width="${cw - 1}" height="26" rx="2"
+      cells += `<rect x="${x + 0.5}" y="4" width="${cw - 1}" height="24" rx="2"
         fill="hsl(${Math.round(it.score * 1.2)},62%,46%)" opacity="${past ? 0.3 : 1}"><title>${tip(it)}</title></rect>`;
       if (new Date(t).getHours() % 3 === 0)
-        ax += `<text x="${x}" y="${H - 4}" class="ax">${this._hh(it.start)}</text>`;
+        ax += `<text x="${x}" y="${H - 3}" class="ax">${this._hh(it.start)}</text>`;
     });
     const nx = pl + ((now - t0) / 3600000) * cw;
     const bst = best
@@ -239,8 +254,8 @@ class SmartGridFlowCard extends HTMLElement {
       : "";
     return `<div class="srow"><span>${icon} ${label}</span><span class="muted">${bst}</span></div>
       <svg viewBox="0 0 ${W} ${H}" class="strip">${cells}
-        <line x1="${nx}" x2="${nx}" y1="0" y2="34" class="now"/>
-        <text x="${nx}" y="${H - 14}" class="ax" style="text-anchor:middle;fill:var(--primary-text-color)">nu</text>${ax}</svg>`;
+        <line x1="${nx}" x2="${nx}" y1="0" y2="32" class="now"/>
+        <text x="${nx}" y="${H - 16}" class="ax" style="text-anchor:middle;fill:var(--primary-text-color)">nu</text>${ax}</svg>`;
   }
 
   _suit(s) {
@@ -309,7 +324,7 @@ class SmartGridFlowCard extends HTMLElement {
 
   _css() {
     return `
-    ha-card{padding:12px 16px 16px;--c-low:#2e9e5b;--c-mid:#e0a800;--c-high:#d64545;--c-acc:var(--primary-color)}
+    ha-card{display:block;padding:12px 16px 16px;--c-low:#2e9e5b;--c-mid:#e0a800;--c-high:#d64545;--c-acc:var(--primary-color)}
     .head{display:flex;justify-content:space-between;align-items:center}
     .title{font-size:1.2em;font-weight:600}
     h3{margin:16px 0 6px;font-size:.95em;font-weight:600;color:var(--secondary-text-color);text-transform:uppercase;letter-spacing:.04em}
@@ -322,7 +337,8 @@ class SmartGridFlowCard extends HTMLElement {
     .sub{font-size:10px;text-anchor:middle;fill:var(--secondary-text-color)}
     .wire{fill:none;stroke:var(--divider-color);stroke-width:2}
     .wire.active{stroke:var(--c-acc);stroke-dasharray:6 6;animation:flow linear infinite}
-    .wire.active.solar{stroke:var(--c-mid)} .wire.active.battery{stroke:var(--c-low)}
+    .wire.active.solar{stroke:#f2b01e} .wire.active.battery{stroke:var(--c-low)} .wire.active.grid{stroke:#4a90d9} .wire.active.ev{stroke:#9b59b6} .wire.active.boiler{stroke:#e67e22}
+    .flow .node.on.solar{stroke:#f2b01e} .flow .node.on.battery{stroke:var(--c-low)} .flow .node.on.grid{stroke:#4a90d9}
     @keyframes flow{to{stroke-dashoffset:-12}}
     .bar{fill:var(--c-mid)} .bar.billig{fill:var(--c-low)} .bar.dyr{fill:var(--c-high)}
     .bar.past{opacity:.35} .bar.cur{stroke:var(--primary-text-color);stroke-width:1.5}
@@ -342,7 +358,7 @@ class SmartGridFlowCard extends HTMLElement {
     .row{display:flex;justify-content:space-between;align-items:center;margin:8px 0;gap:8px;flex-wrap:wrap}
     .target button{width:30px;margin:0 6px}
     .muted{color:var(--secondary-text-color);font-size:.85em;margin-top:4px}
-    .cons{display:grid;grid-template-columns:130px 1fr 120px;gap:8px;align-items:center;margin:4px 0;font-size:.9em}
+    .cons{display:grid;grid-template-columns:150px 1fr 150px;gap:8px;align-items:center;margin:4px 0;font-size:.9em}
     .cbar{height:8px;border-radius:4px;background:var(--divider-color);overflow:hidden}
     .cbar div{height:100%;background:var(--c-acc)}
     .cval{text-align:right}

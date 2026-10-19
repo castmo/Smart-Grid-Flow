@@ -136,4 +136,5 @@ def test_ev_peak_penalty():
     from core.suitability import ev_suitability
     st = steps([1.0, 1.0])
     ev = ev_suitability(st, 7.4, {st[0].start: 3.0}, 0.5, 5.0, 49)
-    assert ev[0]["cost"] > ev[1]["cost"] - 1e-9 and ev[0]["score"] < ev[1]["score"] or ev[0]["cost"] > ev[1]["cost"]
+    assert ev[0]["cost"] >= ev[1]["cost"] > 1.0  # straff över tröskeln, begränsad till 1 kr/kWh
+    assert ev[1]["cost"] <= 2.0 + 1e-9

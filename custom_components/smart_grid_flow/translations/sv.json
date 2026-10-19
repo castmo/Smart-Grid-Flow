@@ -21,7 +21,13 @@
           "boiler_max_temp": "Högsta beredartemperatur",
           "extra_consumers": "Fler stora förbrukare (energisensorer)",
           "ev_charger_kw": "Elbilsladdarens effekt",
-          "shower_reheat_delay_h": "Beredarens uppvärmningsfördröjning efter dusch (h)"
+          "shower_reheat_delay_h": "Beredarens uppvärmningsfördröjning efter dusch (h)",
+          "grid_invert": "Elnätsmätare: negativt värde = import",
+          "solar_power_entity": "Solceller – effekt (W/kW)",
+          "battery_power_entity": "Batteri – effekt (W/kW, + = laddning)",
+          "battery_invert": "Batteri: positivt värde = urladdning",
+          "battery_soc_entity": "Batteri – laddnivå (%)",
+          "ev_power_entity": "Elbilsladdare – effekt (W/kW)"
         }
       },
       "tariff": {
@@ -62,7 +68,13 @@
           "boiler_max_temp": "Högsta beredartemperatur",
           "extra_consumers": "Fler stora förbrukare (energisensorer)",
           "ev_charger_kw": "Elbilsladdarens effekt",
-          "shower_reheat_delay_h": "Beredarens uppvärmningsfördröjning efter dusch (h)"
+          "shower_reheat_delay_h": "Beredarens uppvärmningsfördröjning efter dusch (h)",
+          "grid_invert": "Elnätsmätare: negativt värde = import",
+          "solar_power_entity": "Solceller – effekt (W/kW)",
+          "battery_power_entity": "Batteri – effekt (W/kW, + = laddning)",
+          "battery_invert": "Batteri: positivt värde = urladdning",
+          "battery_soc_entity": "Batteri – laddnivå (%)",
+          "ev_power_entity": "Elbilsladdare – effekt (W/kW)"
         }
       },
       "tariff": {

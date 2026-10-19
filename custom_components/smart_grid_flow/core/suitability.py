@@ -16,6 +16,9 @@ from datetime import datetime, timedelta
 from .optimizer import Step
 
 
+PEAK_PENALTY_CAP = 1.0  # kr/kWh
+
+
 def scores(costs: list[float]) -> list[int]:
     if not costs:
         return []
@@ -37,7 +40,8 @@ def ev_suitability(
     for s in steps:
         total = other_kw.get(s.start, 0.0) + base_kw + ev_kw
         over = max(total - peak_threshold_kw, 0.0) if effect_price_kr_kw > 0 else 0.0
-        extra = effect_price_kr_kw / 3.0 * over / max(ev_kw, 0.1)
+        # Straffet begränsas så att prisskillnader fortfarande syns i diagrammet.
+        extra = min(effect_price_kr_kw / 3.0 * over / max(ev_kw, 0.1), PEAK_PENALTY_CAP)
         costs.append(s.price + extra)
     return [
         {"start": s.start.isoformat(), "score": sc, "cost": round(c, 3), "price": round(s.price, 3)}

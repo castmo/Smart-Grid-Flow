@@ -21,7 +21,13 @@
           "boiler_max_temp": "Högsta beredartemperatur",
           "extra_consumers": "Fler stora förbrukare (energisensorer)",
           "ev_charger_kw": "EV charger power",
-          "shower_reheat_delay_h": "Water heater reheat delay after shower (h)"
+          "shower_reheat_delay_h": "Water heater reheat delay after shower (h)",
+          "grid_invert": "Grid meter: negative = import",
+          "solar_power_entity": "Solar power (W/kW)",
+          "battery_power_entity": "Battery power (W/kW, + = charging)",
+          "battery_invert": "Battery: positive = discharging",
+          "battery_soc_entity": "Battery state of charge (%)",
+          "ev_power_entity": "EV charger power (W/kW)"
         }
       },
       "tariff": {
@@ -62,7 +68,13 @@
           "boiler_max_temp": "Högsta beredartemperatur",
           "extra_consumers": "Fler stora förbrukare (energisensorer)",
           "ev_charger_kw": "EV charger power",
-          "shower_reheat_delay_h": "Water heater reheat delay after shower (h)"
+          "shower_reheat_delay_h": "Water heater reheat delay after shower (h)",
+          "grid_invert": "Grid meter: negative = import",
+          "solar_power_entity": "Solar power (W/kW)",
+          "battery_power_entity": "Battery power (W/kW, + = charging)",
+          "battery_invert": "Battery: positive = discharging",
+          "battery_soc_entity": "Battery state of charge (%)",
+          "ev_power_entity": "EV charger power (W/kW)"
         }
       },
       "tariff": {

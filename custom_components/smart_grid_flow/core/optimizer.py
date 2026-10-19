@@ -187,8 +187,17 @@ def optimize(
         t = t + thermal.predict_delta(t, st.t_out, e)
     plan.cost = sum(p.cost for p in plan.steps)
 
-    # Referens: konstant börvärde = önskad temperatur.
-    base = simulate(t_in, steps, [cfg.target] * n, thermal, energy)
+    # Referens: lägsta konstanta börvärde som ger minst lika hög medeltemperatur
+    # och sluttemperatur som planen (rättvis jämförelse med samma komfort).
+    plan_t = [p.t_in for p in plan.steps] + [t]
+    plan_mean = sum(plan_t) / len(plan_t)
+    base = None
+    for sp in sps:
+        sim = simulate(t_in, steps, [sp] * n, thermal, energy)
+        temps = [x[0] for x in sim]
+        base = sim
+        if sum(temps) / len(temps) >= plan_mean - 0.05 and temps[-1] >= t - 0.3:
+            break
     plan.baseline_cost = sum(st.price * e for st, (_, e) in zip(steps, base))
     plan.baseline_t_end = base[-1][0]
     return plan

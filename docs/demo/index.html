@@ -1,0 +1,395 @@
+<!doctype html><meta charset="utf-8"><title>Smart Grid Flow – demo</title>
+<style>
+ :root{--card-background-color:#fff;--primary-text-color:#212121;--secondary-text-color:#727272;
+  --divider-color:#e0e0e0;--primary-color:#03a9f4;--secondary-background-color:#f1f3f4}
+ body{margin:0;padding:24px;background:#eceff1;font-family:Roboto,Arial,sans-serif;display:flex;justify-content:center}
+ .wrap{width:520px}
+ ha-card{display:block;background:var(--card-background-color);border-radius:12px;color:var(--primary-text-color);
+  box-shadow:0 2px 6px rgba(0,0,0,.15)}
+</style>
+<div class="wrap" id="root"></div>
+<script>/*
+ * Smart Grid Flow – Lovelace-kort (svenska)
+ *
+ * Visar värmepump, varmvattenberedare, elpriser (nu och kommande),
+ * energiförbrukning per stor förbrukare, effektavgift och modellens status.
+ * Registreras automatiskt av integrationen. Lägg till på en dashboard med:
+ *
+ *   type: custom:smart-grid-flow-card
+ *
+ * Valfritt: `entity: sensor.<översiktssensor>` om automatisk sökning inte räcker.
+ * Nya förbrukare (sol, batteri, elbilsladdare) ritas automatiskt när integrationen
+ * rapporterar dem under `consumers`.
+ */
+const SGF_ICONS = { heatpump: "🌡️", boiler: "🚿", solar: "☀️", battery: "🔋", ev: "🚗" };
+const SGF_MODES = [
+  ["price", "Lägsta pris"],
+  ["balanced", "Balanserad"],
+  ["stable", "Stabil temp."],
+];
+
+class SmartGridFlowCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  getCardSize() {
+    return 9;
+  }
+
+  static getStubConfig() {
+    return {};
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const st = this._find();
+    const sig = st ? st.last_updated + JSON.stringify(st.state) : "none";
+    if (sig === this._sig) return;
+    this._sig = sig;
+    this._render(st);
+  }
+
+  /* ---------- hjälpfunktioner ---------- */
+  _find() {
+    const h = this._hass;
+    if (this._config.entity) return h.states[this._config.entity];
+    const id = Object.keys(h.states).find(
+      (k) => k.startsWith("sensor.") && h.states[k].attributes.sgf_overview
+    );
+    this._overviewId = id;
+    return id ? h.states[id] : undefined;
+  }
+
+  _sibling(domain, key) {
+    const h = this._hass;
+    const id = this._config.entity || this._overviewId;
+    const dev = h.entities && h.entities[id] && h.entities[id].device_id;
+    if (!dev) return undefined;
+    return Object.keys(h.entities).find(
+      (e) =>
+        e.startsWith(domain + ".") &&
+        h.entities[e].device_id === dev &&
+        h.entities[e].translation_key === key
+    );
+  }
+
+  _call(domain, service, data) {
+    this._hass.callService(domain, service, data);
+  }
+
+  _fmt(v, d = 2) {
+    return v === null || v === undefined || isNaN(v)
+      ? "–"
+      : Number(v).toLocaleString("sv-SE", { minimumFractionDigits: d, maximumFractionDigits: d });
+  }
+
+  /* ---------- rendering ---------- */
+  _render(st) {
+    if (!st) {
+      this.shadowRoot.innerHTML = `<ha-card><div style="padding:16px">Smart Grid Flow: hittar ingen översiktssensor.</div></ha-card>`;
+      return;
+    }
+    const a = st.attributes;
+    const price = a.price || {};
+    const hp = a.hp || {};
+    const consumers = a.consumers || [];
+    const peak = a.peak || {};
+    const model = a.model || {};
+    const boiler = a.boiler || {};
+
+    this.shadowRoot.innerHTML = `
+      <style>${this._css()}</style>
+      <ha-card>
+        <div class="head">
+          <div class="title">⚡ Smart Grid Flow</div>
+          <div class="chip ${price.level || ""}">
+            ${this._fmt(price.total)} kr/kWh · ${price.level || "–"}
+          </div>
+        </div>
+        ${this._flow(hp, boiler, consumers, a.flow)}
+        ${this._controls(hp)}
+        <h3>Elpris – ${price.tomorrow_available ? "idag & imorgon" : "idag"}</h3>
+        ${this._chart(a.prices || [], price, hp.plan || [])}
+        <div class="legend">
+          <span><i class="dot billig"></i>Billig</span>
+          <span><i class="dot normal"></i>Normal</span>
+          <span><i class="dot dyr"></i>Dyr</span>
+          <span><i class="line"></i>Planerat börvärde</span>
+        </div>
+        <h3>Bästa tid att köra stora förbrukare</h3>
+        ${this._suit(a.suitability || {})}
+        <h3>Förbrukning idag</h3>
+        ${this._consumption(consumers)}
+        <h3>Effektavgift (${peak.month || "–"})</h3>
+        ${this._peak(peak)}
+        <h3>Självlärande modell</h3>
+        ${this._model(model, hp)}
+      </ha-card>`;
+    this._bind();
+  }
+
+  _flow(hp, boiler, consumers, f) {
+    f = f || {};
+    const W = 420, H = 335;
+    const hub = { x: 210, y: 150 };
+    const has = (k) => f[k] !== null && f[k] !== undefined;
+    const fmt = (v) => this._fmt(Math.abs(v || 0), 2) + " kW";
+    // Källor/lagring (övre raden) och förbrukare (nedre raden).
+    const top = [];
+    if (has("solar")) top.push({ k: "solar", ico: "☀️", name: "Solceller", kw: f.solar, dir: "in" });
+    top.push({ k: "grid", ico: "🔌", name: "Elnät", kw: f.grid, dir: f.grid >= 0 ? "in" : "out",
+      sub: f.grid >= 0 ? "köper" : "säljer" });
+    if (has("battery")) top.push({ k: "battery", ico: "🔋", name: "Batteri", kw: f.battery,
+      dir: f.battery > 0 ? "out" : "in", sub: (f.battery > 0.05 ? "laddar" : f.battery < -0.05 ? "laddar ur" : "vilar") +
+      (has("soc") ? ` · ${this._fmt(f.soc, 0)}%` : "") });
+    const bot = [];
+    let sub = "";
+    if (hp.indoor != null) sub = `${this._fmt(hp.indoor, 1)}° → ${this._fmt(hp.setpoint, 1)}°`;
+    bot.push({ k: "heatpump", ico: "🌡️", name: "Värmepump", kw: f.heatpump, sub });
+    bot.push({ k: "boiler", ico: "🚿", name: "Beredare", kw: f.boiler,
+      sub: boiler.temp != null ? `${this._fmt(boiler.temp, 0)}°C` : boiler.on ? "på" : "" });
+    if (has("ev")) bot.push({ k: "ev", ico: "🚗", name: "Elbil", kw: f.ev });
+    bot.push({ k: "other", ico: "🏠", name: "Övrigt", kw: f.other });
+    const place = (arr, y) => arr.map((n, i) => ({ ...n, x: (W / (arr.length + 1)) * (i + 1), y }));
+    const T = place(top, 62), B = place(bot, 262);
+    const dur = (kw) => Math.max(0.5, Math.min(4, 2.4 / Math.max(Math.abs(kw), 0.05))).toFixed(2);
+    // Banan ritas alltid i flödesriktningen så att animationen följer strömmen.
+    const wire = (from, to, kw, cls) => {
+      const act = Math.abs(kw) > 0.05;
+      const my = (from.y + to.y) / 2;
+      return `<path d="M${from.x},${from.y} C${from.x},${my} ${to.x},${my} ${to.x},${to.y}"
+        class="wire ${act ? "active " + cls : ""}" style="animation-duration:${dur(kw)}s"/>`;
+    };
+    let svg = `<svg viewBox="0 0 ${W} ${H}" class="flow">`;
+    T.forEach((n) => {
+      const hubTop = { x: hub.x, y: hub.y - 26 }, nb = { x: n.x, y: n.y + 26 };
+      svg += n.dir === "in" ? wire(nb, hubTop, n.kw, n.k) : wire(hubTop, nb, n.kw, n.k);
+    });
+    B.forEach((n) => {
+      svg += wire({ x: hub.x, y: hub.y + 26 }, { x: n.x, y: n.y - 26 }, n.kw, n.k);
+    });
+    svg += `<circle cx="${hub.x}" cy="${hub.y}" r="26" class="node hub"/>
+      <text x="${hub.x}" y="${hub.y + 2}" class="ico">🏠</text>
+      <text x="${hub.x}" y="${hub.y + 16}" class="sub">${fmt(f.load)}</text>`;
+    [...T, ...B].forEach((n) => {
+      const on = Math.abs(n.kw || 0) > 0.05;
+      const up = n.y < hub.y;
+      const ly = up ? n.y - 42 : n.y + 42;
+      svg += `<g><circle cx="${n.x}" cy="${n.y}" r="24" class="node ${on ? "on " + n.k : ""}"/>
+        <text x="${n.x}" y="${n.y + 7}" class="ico">${n.ico}</text>
+        <text x="${n.x}" y="${ly}" class="lbl">${n.name}</text>
+        <text x="${n.x}" y="${up ? n.y - 30 : ly + 12}" class="sub">${fmt(n.kw)}${up && n.sub ? " · " + n.sub : ""}</text>
+        ${!up && n.sub ? `<text x="${n.x}" y="${ly + 24}" class="sub">${n.sub}</text>` : ""}</g>`;
+    });
+    return svg + `</svg>`;
+  }
+
+  _controls(hp) {
+    const modes = SGF_MODES.map(
+      ([k, l]) => `<button data-mode="${k}" class="${hp.mode === k ? "sel" : ""}">${l}</button>`
+    ).join("");
+    return `<div class="controls">
+      <div class="modes">${modes}</div>
+      <div class="row">
+        <label class="sw"><input type="checkbox" id="hpctl" ${hp.control ? "checked" : ""}/> Styr värmepump</label>
+        <div class="target">Önskad temp
+          <button id="tdn">−</button><b>${this._fmt(hp.target, 1)}°</b><button id="tup">+</button>
+        </div>
+      </div>
+      <div class="muted">Planerat börvärde nu: <b>${this._fmt(hp.plan_setpoint, 1)}°</b> ·
+        Beräknad besparing 36 h: <b>${this._fmt(hp.plan_savings, 2)} kr</b></div>
+    </div>`;
+  }
+
+  _chart(prices, price, plan) {
+    if (!prices.length) return `<div class="muted">Inga priser hämtade ännu.</div>`;
+    const W = 420, H = 150, pl = 4, pr = 26, pt = 8, pb = 18;
+    const n = prices.length;
+    const bw = (W - pl - pr) / n;
+    const max = Math.max(...prices.map((p) => p.total), 0.5);
+    const now = Date.now();
+    const lv = price.levels || { low: 0, high: 9 };
+    const planMap = {};
+    plan.forEach((p) => (planMap[new Date(p.start).getTime()] = p.setpoint));
+    let bars = "", pts = [], xl = "";
+    prices.forEach((p, i) => {
+      const t = new Date(p.start).getTime();
+      const h = ((p.total / max) * (H - pt - pb));
+      const x = pl + i * bw;
+      const cls = p.total <= lv.low ? "billig" : p.total >= lv.high ? "dyr" : "normal";
+      const cur = t <= now && now < t + 3600000;
+      bars += `<rect x="${x + 0.5}" y="${H - pb - h}" width="${bw - 1}" height="${h}" class="bar ${cls} ${t + 3600000 <= now ? "past" : ""} ${cur ? "cur" : ""}">
+        <title>${new Date(t).toLocaleString("sv-SE", { weekday: "short", hour: "2-digit", minute: "2-digit" })}: ${this._fmt(p.total)} kr/kWh (spot ${this._fmt(p.spot)})</title></rect>`;
+      if (planMap[t] !== undefined) {
+        const y = pt + (1 - (planMap[t] - 17) / 9) * (H - pt - pb);
+        pts.push(`${x + bw / 2},${y}`);
+      }
+      if (new Date(t).getHours() % 6 === 0)
+        xl += `<text x="${x}" y="${H - 4}" class="ax">${String(new Date(t).getHours()).padStart(2, "0")}</text>`;
+    });
+    const nowX = pl + ((now - new Date(prices[0].start).getTime()) / 3600000) * bw;
+    return `<svg viewBox="0 0 ${W} ${H}" class="chart">${bars}
+      ${pts.length > 1 ? `<polyline points="${pts.join(" ")}" class="plan"/>` : ""}
+      <line x1="${nowX}" x2="${nowX}" y1="${pt}" y2="${H - pb}" class="now"/>
+      ${xl}
+      <text x="${W - pr + 3}" y="${pt + 8}" class="ax">${this._fmt(max, 1)}</text>
+      <text x="${W - pr + 3}" y="${H - pb}" class="ax">0</text></svg>`;
+  }
+
+  _hh(iso) {
+    return String(new Date(iso).getHours()).padStart(2, "0");
+  }
+
+  _strip(items, label, icon, best, tip) {
+    if (!items.length) return "";
+    const W = 420, pl = 4, pr = 4, H = 54;
+    const n = items.length, cw = (W - pl - pr) / n;
+    const now = Date.now();
+    const t0 = new Date(items[0].start).getTime();
+    let cells = "", ax = "";
+    items.forEach((it, i) => {
+      const t = new Date(it.start).getTime();
+      const x = pl + i * cw;
+      const past = t + 3600000 <= now;
+      cells += `<rect x="${x + 0.5}" y="4" width="${cw - 1}" height="24" rx="2"
+        fill="hsl(${Math.round(it.score * 1.2)},62%,46%)" opacity="${past ? 0.3 : 1}"><title>${tip(it)}</title></rect>`;
+      if (new Date(t).getHours() % 3 === 0)
+        ax += `<text x="${x}" y="${H - 3}" class="ax">${this._hh(it.start)}</text>`;
+    });
+    const nx = pl + ((now - t0) / 3600000) * cw;
+    const bst = best
+      ? `Bäst: <b>${this._hh(best.start)}–${this._hh(best.end)}</b>`
+      : "";
+    return `<div class="srow"><span>${icon} ${label}</span><span class="muted">${bst}</span></div>
+      <svg viewBox="0 0 ${W} ${H}" class="strip">${cells}
+        <line x1="${nx}" x2="${nx}" y1="0" y2="32" class="now"/>
+        <text x="${nx}" y="${H - 16}" class="ax" style="text-anchor:middle;fill:var(--primary-text-color)">nu</text>${ax}</svg>`;
+  }
+
+  _suit(s) {
+    if (!s.ev) return `<div class="muted">Väntar på elpriser…</div>`;
+    const ev = this._strip(s.ev, `Elbilsladdning (${this._fmt(s.ev_kw, 1)} kW)`, "🚗", s.best_ev_3h,
+      (it) => `${this._hh(it.start)}:00 – ${this._fmt(it.cost)} kr/kWh inkl. ev. effekttopp · lämplighet ${it.score}%`);
+    const sh = this._strip(s.shower, "Dusch", "🚿", s.best_shower,
+      (it) => `Dusch ${this._hh(it.start)}:00 → beredaren värms ca kl ${this._hh(it.reheat)}:00 (${this._fmt(it.cost)} kr/kWh) · lämplighet ${it.score}%`);
+    return `${ev}${sh}
+      <div class="muted">Grönt = billigt, rött = dyrt. Duschens energi förbrukas när beredaren värmer upp efteråt
+      (${s.shower_scheduled ? "enligt schemat för beredaren" : "ca " + s.shower_delay_h + " h efter duschen"}), så diagrammet visar priset vid uppvärmningen.</div>`;
+  }
+
+  _consumption(consumers) {
+    if (!consumers.length) return `<div class="muted">Inga energisensorer konfigurerade.</div>`;
+    const max = Math.max(...consumers.map((c) => c.kwh_today || 0), 0.1);
+    return consumers
+      .map(
+        (c) => `<div class="cons">
+        <div class="cname">${SGF_ICONS[c.key] || "⚡"} ${c.name}</div>
+        <div class="cbar"><div style="width:${((c.kwh_today || 0) / max) * 100}%"></div></div>
+        <div class="cval">${this._fmt(c.kwh_today)} kWh · ${this._fmt(c.cost_today)} kr</div></div>`
+      )
+      .join("");
+  }
+
+  _peak(p) {
+    const top = (p.top || []).map((v) => `<span class="pk">${this._fmt(v)} kW</span>`).join("") || "<span class='muted'>Inga toppar registrerade (konfigurera huvudmätare)</span>";
+    return `<div>${top}</div><div class="muted">Debiteras: <b>${this._fmt(p.billed_kw)} kW</b> × ${this._fmt(p.price_kr_kw, 0)} kr = <b>${this._fmt(p.cost, 0)} kr</b>.
+      Håll timmedeleffekt under <b>${this._fmt(p.threshold)} kW</b> för att undvika högre avgift.</div>`;
+  }
+
+  _model(m, hp) {
+    const pct = Math.round((m.confidence || 0) * 100);
+    return `<div class="cbar"><div style="width:${pct}%"></div></div>
+      <div class="muted">Säkerhet ${pct}% (${m.samples || 0} timmar inlärda) · husets tidskonstant ${this._fmt(m.time_constant_h, 0)} h ·
+      temperaturfel ${this._fmt(m.thermal_error, 2)} °C/h · utetemp ${this._fmt(hp.outdoor, 1)}°C</div>`;
+  }
+
+  _bind() {
+    const r = this.shadowRoot;
+    r.querySelectorAll("[data-mode]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const e = this._sibling("select", "mode");
+        const label = SGF_MODES.find((m) => m[0] === b.dataset.mode)[1];
+        const full = { price: "Lägsta pris", balanced: "Balanserad", stable: "Stabil temperatur" }[b.dataset.mode];
+        if (e) this._call("select", "select_option", { entity_id: e, option: full || label });
+      })
+    );
+    const ctl = r.getElementById("hpctl");
+    if (ctl)
+      ctl.addEventListener("change", () => {
+        const e = this._sibling("switch", "hp_control");
+        if (e) this._call("switch", ctl.checked ? "turn_on" : "turn_off", { entity_id: e });
+      });
+    const step = (d) => {
+      const e = this._sibling("number", "target");
+      if (!e) return;
+      const cur = parseFloat(this._hass.states[e].state);
+      this._call("number", "set_value", { entity_id: e, value: cur + d });
+    };
+    const up = r.getElementById("tup"), dn = r.getElementById("tdn");
+    if (up) up.addEventListener("click", () => step(0.5));
+    if (dn) dn.addEventListener("click", () => step(-0.5));
+  }
+
+  _css() {
+    return `
+    ha-card{display:block;padding:12px 16px 16px;--c-low:#2e9e5b;--c-mid:#e0a800;--c-high:#d64545;--c-acc:var(--primary-color)}
+    .head{display:flex;justify-content:space-between;align-items:center}
+    .title{font-size:1.2em;font-weight:600}
+    h3{margin:16px 0 6px;font-size:.95em;font-weight:600;color:var(--secondary-text-color);text-transform:uppercase;letter-spacing:.04em}
+    .chip{padding:4px 10px;border-radius:14px;color:#fff;font-weight:600;background:var(--c-mid)}
+    .chip.billig{background:var(--c-low)} .chip.dyr{background:var(--c-high)}
+    svg{width:100%;height:auto;display:block}
+    .flow .node{fill:var(--card-background-color);stroke:var(--divider-color);stroke-width:2}
+    .flow .node.on{stroke:var(--c-acc)} .flow .hub{stroke:var(--c-acc)}
+    .ico{font-size:20px;text-anchor:middle} .lbl{font-size:11px;text-anchor:middle;fill:var(--primary-text-color);font-weight:600}
+    .sub{font-size:10px;text-anchor:middle;fill:var(--secondary-text-color)}
+    .wire{fill:none;stroke:var(--divider-color);stroke-width:2}
+    .wire.active{stroke:var(--c-acc);stroke-dasharray:6 6;animation:flow linear infinite}
+    .wire.active.solar{stroke:#f2b01e} .wire.active.battery{stroke:var(--c-low)} .wire.active.grid{stroke:#4a90d9} .wire.active.ev{stroke:#9b59b6} .wire.active.boiler{stroke:#e67e22}
+    .flow .node.on.solar{stroke:#f2b01e} .flow .node.on.battery{stroke:var(--c-low)} .flow .node.on.grid{stroke:#4a90d9}
+    @keyframes flow{to{stroke-dashoffset:-12}}
+    .bar{fill:var(--c-mid)} .bar.billig{fill:var(--c-low)} .bar.dyr{fill:var(--c-high)}
+    .bar.past{opacity:.35} .bar.cur{stroke:var(--primary-text-color);stroke-width:1.5}
+    .plan{fill:none;stroke:var(--c-acc);stroke-width:2;stroke-linejoin:round}
+    .now{stroke:var(--primary-text-color);stroke-dasharray:3 3;opacity:.7}
+    .ax{font-size:9px;fill:var(--secondary-text-color)}
+    .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:.8em;color:var(--secondary-text-color);margin-top:4px}
+    .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;background:var(--c-mid)}
+    .dot.billig{background:var(--c-low)} .dot.dyr{background:var(--c-high)}
+    .line{display:inline-block;width:14px;height:0;border-top:2px solid var(--c-acc);margin-right:4px;vertical-align:middle}
+    .srow{display:flex;justify-content:space-between;margin-top:6px;font-size:.9em}
+    .strip{margin-bottom:2px}
+    .controls{margin-top:8px}
+    .modes{display:flex;gap:6px} .modes button{flex:1}
+    button{border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);border-radius:8px;padding:6px 10px;cursor:pointer}
+    button.sel{background:var(--c-acc);color:#fff;border-color:var(--c-acc)}
+    .row{display:flex;justify-content:space-between;align-items:center;margin:8px 0;gap:8px;flex-wrap:wrap}
+    .target button{width:30px;margin:0 6px}
+    .muted{color:var(--secondary-text-color);font-size:.85em;margin-top:4px}
+    .cons{display:grid;grid-template-columns:150px 1fr 150px;gap:8px;align-items:center;margin:4px 0;font-size:.9em}
+    .cbar{height:8px;border-radius:4px;background:var(--divider-color);overflow:hidden}
+    .cbar div{height:100%;background:var(--c-acc)}
+    .cval{text-align:right}
+    .pk{display:inline-block;margin:0 6px 4px 0;padding:3px 9px;border-radius:12px;background:var(--secondary-background-color);font-weight:600}
+    `;
+  }
+}
+
+customElements.define("smart-grid-flow-card", SmartGridFlowCard);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "smart-grid-flow-card",
+  name: "Smart Grid Flow",
+  description: "Värmepump, varmvatten, elpriser, förbrukning och effektavgift",
+});
+</script>
+<script>
+ const attrs = {"now": "2026-10-18T21:54:58.865748+02:00", "price": {"spot": 0.722, "total": 1.645, "level": "normal", "levels": {"low": 1.61875, "high": 1.87}, "avg_today": 1.5641666666666667, "min_today": 1.12375, "max_today": 2.1437500000000003, "tomorrow_available": true}, "prices": [{"start": "2026-10-18T00:00:00+02:00", "spot": 0.448, "total": 1.3025}, {"start": "2026-10-18T01:00:00+02:00", "spot": 0.383, "total": 1.2212}, {"start": "2026-10-18T02:00:00+02:00", "spot": 0.325, "total": 1.1487}, {"start": "2026-10-18T03:00:00+02:00", "spot": 0.305, "total": 1.1238}, {"start": "2026-10-18T04:00:00+02:00", "spot": 0.348, "total": 1.1775}, {"start": "2026-10-18T05:00:00+02:00", "spot": 0.461, "total": 1.3188}, {"start": "2026-10-18T06:00:00+02:00", "spot": 0.628, "total": 1.5275}, {"start": "2026-10-18T07:00:00+02:00", "spot": 0.796, "total": 1.7375}, {"start": "2026-10-18T08:00:00+02:00", "spot": 0.879, "total": 1.8413}, {"start": "2026-10-18T09:00:00+02:00", "spot": 0.839, "total": 1.7913}, {"start": "2026-10-18T10:00:00+02:00", "spot": 0.728, "total": 1.6525}, {"start": "2026-10-18T11:00:00+02:00", "spot": 0.628, "total": 1.5275}, {"start": "2026-10-18T12:00:00+02:00", "spot": 0.574, "total": 1.46}, {"start": "2026-10-18T13:00:00+02:00", "spot": 0.557, "total": 1.4388}, {"start": "2026-10-18T14:00:00+02:00", "spot": 0.561, "total": 1.4438}, {"start": "2026-10-18T15:00:00+02:00", "spot": 0.602, "total": 1.495}, {"start": "2026-10-18T16:00:00+02:00", "spot": 0.722, "total": 1.645}, {"start": "2026-10-18T17:00:00+02:00", "spot": 0.933, "total": 1.9088}, {"start": "2026-10-18T18:00:00+02:00", "spot": 1.121, "total": 2.1438}, {"start": "2026-10-18T19:00:00+02:00", "spot": 1.121, "total": 2.1438}, {"start": "2026-10-18T20:00:00+02:00", "spot": 0.933, "total": 1.9088}, {"start": "2026-10-18T21:00:00+02:00", "spot": 0.722, "total": 1.645}, {"start": "2026-10-18T22:00:00+02:00", "spot": 0.602, "total": 1.495}, {"start": "2026-10-18T23:00:00+02:00", "spot": 0.56, "total": 1.4425}, {"start": "2026-10-19T00:00:00+02:00", "spot": 0.56, "total": 1.4425}, {"start": "2026-10-19T01:00:00+02:00", "spot": 0.478, "total": 1.34}, {"start": "2026-10-19T02:00:00+02:00", "spot": 0.406, "total": 1.25}, {"start": "2026-10-19T03:00:00+02:00", "spot": 0.382, "total": 1.22}, {"start": "2026-10-19T04:00:00+02:00", "spot": 0.435, "total": 1.2862}, {"start": "2026-10-19T05:00:00+02:00", "spot": 0.576, "total": 1.4625}, {"start": "2026-10-19T06:00:00+02:00", "spot": 0.785, "total": 1.7238}, {"start": "2026-10-19T07:00:00+02:00", "spot": 0.995, "total": 1.9862}, {"start": "2026-10-19T08:00:00+02:00", "spot": 1.099, "total": 2.1162}, {"start": "2026-10-19T09:00:00+02:00", "spot": 1.049, "total": 2.0537}, {"start": "2026-10-19T10:00:00+02:00", "spot": 0.91, "total": 1.88}, {"start": "2026-10-19T11:00:00+02:00", "spot": 0.785, "total": 1.7238}, {"start": "2026-10-19T12:00:00+02:00", "spot": 0.718, "total": 1.64}, {"start": "2026-10-19T13:00:00+02:00", "spot": 0.696, "total": 1.6125}, {"start": "2026-10-19T14:00:00+02:00", "spot": 0.702, "total": 1.62}, {"start": "2026-10-19T15:00:00+02:00", "spot": 0.752, "total": 1.6825}, {"start": "2026-10-19T16:00:00+02:00", "spot": 0.902, "total": 1.87}, {"start": "2026-10-19T17:00:00+02:00", "spot": 1.166, "total": 2.2}, {"start": "2026-10-19T18:00:00+02:00", "spot": 1.401, "total": 2.4938}, {"start": "2026-10-19T19:00:00+02:00", "spot": 1.401, "total": 2.4938}, {"start": "2026-10-19T20:00:00+02:00", "spot": 1.166, "total": 2.2}, {"start": "2026-10-19T21:00:00+02:00", "spot": 0.902, "total": 1.87}, {"start": "2026-10-19T22:00:00+02:00", "spot": 0.752, "total": 1.6825}, {"start": "2026-10-19T23:00:00+02:00", "spot": 0.701, "total": 1.6187}], "hp": {"indoor": 20.8, "outdoor": 3.5, "setpoint": 21.5, "hvac_mode": "heat", "power_kw": 1.2, "plan_setpoint": 18.0, "plan": [{"start": "2026-10-18T21:00:00+02:00", "setpoint": 18.0, "t_in": 21.0, "t_out": 2.0, "kwh": 0.57, "price": 1.645}, {"start": "2026-10-18T22:00:00+02:00", "setpoint": 24.5, "t_in": 20.60442, "t_out": 1.9833333333333334, "kwh": 2.3116435999999996, "price": 1.495}, {"start": "2026-10-18T23:00:00+02:00", "setpoint": 24.5, "t_in": 20.75303475942, "t_out": 1.9666666666666666, "kwh": 2.2497254010436, "price": 1.4425000000000001}, {"start": "2026-10-19T00:00:00+02:00", "setpoint": 21.5, "t_in": 20.877634716816637, "t_out": 1.95, "kwh": 0.8478934189370126, "price": 1.4425000000000001}, {"start": "2026-10-19T01:00:00+02:00", "setpoint": 24.5, "t_in": 20.56913387749402, "t_out": 1.9333333333333333, "kwh": 2.327963771452511, "price": 1.34}, {"start": "2026-10-19T02:00:00+02:00", "setpoint": 25.0, "t_in": 20.72195118247938, "t_out": 1.9166666666666667, "kwh": 2.4892805033586605, "price": 1.25}, {"start": "2026-10-19T03:00:00+02:00", "setpoint": 25.0, "t_in": 20.91889016090691, "t_out": 1.9, "kwh": 2.4070661324190987, "price": 1.22}, {"start": "2026-10-19T04:00:00+02:00", "setpoint": 25.0, "t_in": 21.084163572760218, "t_out": 1.8833333333333333, "kwh": 2.3381512994407085, "price": 1.28625}, {"start": "2026-10-19T05:00:00+02:00", "setpoint": 25.0, "t_in": 21.222794610251466, "t_out": 1.8666666666666667, "kwh": 2.2804262636943844, "price": 1.4625}, {"start": "2026-10-19T06:00:00+02:00", "setpoint": 25.0, "t_in": 21.339009038128925, "t_out": 1.85, "kwh": 2.2321162039858518, "price": 1.7237500000000001}, {"start": "2026-10-19T07:00:00+02:00", "setpoint": 22.5, "t_in": 21.436361873112933, "t_out": 1.8333333333333333, "kwh": 1.0667280132925683, "price": 1.9862499999999998}, {"start": "2026-10-19T08:00:00+02:00", "setpoint": 18.0, "t_in": 21.174156424980424, "t_out": 1.8166666666666667, "kwh": 0.5807246927494127, "price": 2.11625}, {"start": "2026-10-19T09:00:00+02:00", "setpoint": 18.0, "t_in": 20.77081408963132, "t_out": 1.8, "kwh": 0.5691244226889395, "price": 2.05375}, {"start": "2026-10-19T10:00:00+02:00", "setpoint": 23.5, "t_in": 20.375500265631583, "t_out": 1.7833333333333332, "kwh": 1.963789888434735, "price": 1.8800000000000001}, {"start": "2026-10-19T11:00:00+02:00", "setpoint": 25.0, "t_in": 20.41737850009618, "t_out": 1.7666666666666666, "kwh": 2.5, "price": 1.7237500000000001}, {"start": "2026-10-19T12:00:00+02:00", "setpoint": 25.0, "t_in": 20.621107145093294, "t_out": 1.75, "kwh": 2.5, "price": 1.64}, {"start": "2026-10-19T13:00:00+02:00", "setpoint": 25.0, "t_in": 20.818098930740494, "t_out": 1.7333333333333334, "kwh": 2.454398449088993, "price": 1.6125}, {"start": "2026-10-19T14:00:00+02:00", "setpoint": 25.0, "t_in": 20.99463836948024, "t_out": 1.7166666666666666, "kwh": 2.3807518848183, "price": 1.6199999999999999}, {"start": "2026-10-19T15:00:00+02:00", "setpoint": 25.0, "t_in": 21.142785656048137, "t_out": 1.7, "kwh": 2.319030024459783, "price": 1.6824999999999999}, {"start": "2026-10-19T16:00:00+02:00", "setpoint": 25.0, "t_in": 21.26703814682937, "t_out": 1.6833333333333333, "kwh": 2.267343978331664, "price": 1.87}, {"start": "2026-10-19T17:00:00+02:00", "setpoint": 23.0, "t_in": 21.371180283014564, "t_out": 1.6666666666666667, "kwh": 1.3241042811338832, "price": 2.2}, {"start": "2026-10-19T18:00:00+02:00", "setpoint": 18.0, "t_in": 21.18389668026996, "t_out": 1.65, "kwh": 0.5860169004080988, "price": 2.4937500000000004}, {"start": "2026-10-19T19:00:00+02:00", "setpoint": 18.0, "t_in": 20.77658563364131, "t_out": 1.6333333333333333, "kwh": 0.5742975690092393, "price": 2.4937500000000004}, {"start": "2026-10-19T20:00:00+02:00", "setpoint": 22.0, "t_in": 20.37739139342299, "t_out": 1.6166666666666667, "kwh": 1.2929956147623445, "price": 2.2}, {"start": "2026-10-19T21:00:00+02:00", "setpoint": 25.0, "t_in": 20.2087393647806, "t_out": 1.5999999999999999, "kwh": 2.5, "price": 1.87}, {"start": "2026-10-19T22:00:00+02:00", "setpoint": 25.0, "t_in": 20.412477183837183, "t_out": 1.5833333333333333, "kwh": 2.5, "price": 1.6824999999999999}, {"start": "2026-10-19T23:00:00+02:00", "setpoint": 25.0, "t_in": 20.609477868322067, "t_out": 1.5666666666666667, "kwh": 2.5, "price": 1.61875}], "plan_cost": 82.37314812856194, "plan_savings": 7.043012638630046, "control": true, "mode": "balanced", "target": 21.0}, "boiler": {"on": true, "wanted_on": true, "reason": "schema", "temp": 58.0, "control": true, "schedule": ["2026-10-19T02:00:00+02:00", "2026-10-19T03:00:00+02:00", "2026-10-19T04:00:00+02:00"]}, "suitability": {"ev": [{"start": "2026-10-18T00:00:00+02:00", "score": 87, "cost": 2.303, "price": 1.302}, {"start": "2026-10-18T01:00:00+02:00", "score": 93, "cost": 2.221, "price": 1.221}, {"start": "2026-10-18T02:00:00+02:00", "score": 98, "cost": 2.149, "price": 1.149}, {"start": "2026-10-18T03:00:00+02:00", "score": 100, "cost": 2.124, "price": 1.124}, {"start": "2026-10-18T04:00:00+02:00", "score": 96, "cost": 2.178, "price": 1.177}, {"start": "2026-10-18T05:00:00+02:00", "score": 86, "cost": 2.319, "price": 1.319}, {"start": "2026-10-18T06:00:00+02:00", "score": 71, "cost": 2.527, "price": 1.528}, {"start": "2026-10-18T07:00:00+02:00", "score": 55, "cost": 2.737, "price": 1.738}, {"start": "2026-10-18T08:00:00+02:00", "score": 48, "cost": 2.841, "price": 1.841}, {"start": "2026-10-18T09:00:00+02:00", "score": 51, "cost": 2.791, "price": 1.791}, {"start": "2026-10-18T10:00:00+02:00", "score": 61, "cost": 2.652, "price": 1.653}, {"start": "2026-10-18T11:00:00+02:00", "score": 71, "cost": 2.527, "price": 1.528}, {"start": "2026-10-18T12:00:00+02:00", "score": 75, "cost": 2.46, "price": 1.46}, {"start": "2026-10-18T13:00:00+02:00", "score": 77, "cost": 2.439, "price": 1.439}, {"start": "2026-10-18T14:00:00+02:00", "score": 77, "cost": 2.444, "price": 1.444}, {"start": "2026-10-18T15:00:00+02:00", "score": 73, "cost": 2.495, "price": 1.495}, {"start": "2026-10-18T16:00:00+02:00", "score": 62, "cost": 2.645, "price": 1.645}, {"start": "2026-10-18T17:00:00+02:00", "score": 43, "cost": 2.909, "price": 1.909}, {"start": "2026-10-18T18:00:00+02:00", "score": 26, "cost": 3.144, "price": 2.144}, {"start": "2026-10-18T19:00:00+02:00", "score": 26, "cost": 3.144, "price": 2.144}, {"start": "2026-10-18T20:00:00+02:00", "score": 43, "cost": 2.909, "price": 1.909}, {"start": "2026-10-18T21:00:00+02:00", "score": 62, "cost": 2.645, "price": 1.645}, {"start": "2026-10-18T22:00:00+02:00", "score": 73, "cost": 2.495, "price": 1.495}, {"start": "2026-10-18T23:00:00+02:00", "score": 77, "cost": 2.442, "price": 1.443}, {"start": "2026-10-19T00:00:00+02:00", "score": 77, "cost": 2.442, "price": 1.443}, {"start": "2026-10-19T01:00:00+02:00", "score": 84, "cost": 2.34, "price": 1.34}, {"start": "2026-10-19T02:00:00+02:00", "score": 91, "cost": 2.25, "price": 1.25}, {"start": "2026-10-19T03:00:00+02:00", "score": 93, "cost": 2.22, "price": 1.22}, {"start": "2026-10-19T04:00:00+02:00", "score": 88, "cost": 2.286, "price": 1.286}, {"start": "2026-10-19T05:00:00+02:00", "score": 75, "cost": 2.462, "price": 1.462}, {"start": "2026-10-19T06:00:00+02:00", "score": 56, "cost": 2.724, "price": 1.724}, {"start": "2026-10-19T07:00:00+02:00", "score": 37, "cost": 2.986, "price": 1.986}, {"start": "2026-10-19T08:00:00+02:00", "score": 28, "cost": 3.116, "price": 2.116}, {"start": "2026-10-19T09:00:00+02:00", "score": 32, "cost": 3.054, "price": 2.054}, {"start": "2026-10-19T10:00:00+02:00", "score": 45, "cost": 2.88, "price": 1.88}, {"start": "2026-10-19T11:00:00+02:00", "score": 56, "cost": 2.724, "price": 1.724}, {"start": "2026-10-19T12:00:00+02:00", "score": 62, "cost": 2.64, "price": 1.64}, {"start": "2026-10-19T13:00:00+02:00", "score": 64, "cost": 2.612, "price": 1.613}, {"start": "2026-10-19T14:00:00+02:00", "score": 64, "cost": 2.62, "price": 1.62}, {"start": "2026-10-19T15:00:00+02:00", "score": 59, "cost": 2.683, "price": 1.682}, {"start": "2026-10-19T16:00:00+02:00", "score": 46, "cost": 2.87, "price": 1.87}, {"start": "2026-10-19T17:00:00+02:00", "score": 21, "cost": 3.2, "price": 2.2}, {"start": "2026-10-19T18:00:00+02:00", "score": 0, "cost": 3.494, "price": 2.494}, {"start": "2026-10-19T19:00:00+02:00", "score": 0, "cost": 3.494, "price": 2.494}, {"start": "2026-10-19T20:00:00+02:00", "score": 21, "cost": 3.2, "price": 2.2}, {"start": "2026-10-19T21:00:00+02:00", "score": 46, "cost": 2.87, "price": 1.87}, {"start": "2026-10-19T22:00:00+02:00", "score": 59, "cost": 2.683, "price": 1.682}, {"start": "2026-10-19T23:00:00+02:00", "score": 64, "cost": 2.619, "price": 1.619}], "shower": [{"start": "2026-10-18T00:00:00+02:00", "score": 93, "cost": 1.221, "reheat": "2026-10-18T01:00:00+02:00"}, {"start": "2026-10-18T01:00:00+02:00", "score": 98, "cost": 1.149, "reheat": "2026-10-18T02:00:00+02:00"}, {"start": "2026-10-18T02:00:00+02:00", "score": 100, "cost": 1.124, "reheat": "2026-10-18T03:00:00+02:00"}, {"start": "2026-10-18T03:00:00+02:00", "score": 96, "cost": 1.177, "reheat": "2026-10-18T04:00:00+02:00"}, {"start": "2026-10-18T04:00:00+02:00", "score": 86, "cost": 1.319, "reheat": "2026-10-18T05:00:00+02:00"}, {"start": "2026-10-18T05:00:00+02:00", "score": 71, "cost": 1.528, "reheat": "2026-10-18T06:00:00+02:00"}, {"start": "2026-10-18T06:00:00+02:00", "score": 55, "cost": 1.738, "reheat": "2026-10-18T07:00:00+02:00"}, {"start": "2026-10-18T07:00:00+02:00", "score": 48, "cost": 1.841, "reheat": "2026-10-18T08:00:00+02:00"}, {"start": "2026-10-18T08:00:00+02:00", "score": 51, "cost": 1.791, "reheat": "2026-10-18T09:00:00+02:00"}, {"start": "2026-10-18T09:00:00+02:00", "score": 61, "cost": 1.653, "reheat": "2026-10-18T10:00:00+02:00"}, {"start": "2026-10-18T10:00:00+02:00", "score": 71, "cost": 1.528, "reheat": "2026-10-18T11:00:00+02:00"}, {"start": "2026-10-18T11:00:00+02:00", "score": 75, "cost": 1.46, "reheat": "2026-10-18T12:00:00+02:00"}, {"start": "2026-10-18T12:00:00+02:00", "score": 77, "cost": 1.439, "reheat": "2026-10-18T13:00:00+02:00"}, {"start": "2026-10-18T13:00:00+02:00", "score": 77, "cost": 1.444, "reheat": "2026-10-18T14:00:00+02:00"}, {"start": "2026-10-18T14:00:00+02:00", "score": 73, "cost": 1.495, "reheat": "2026-10-18T15:00:00+02:00"}, {"start": "2026-10-18T15:00:00+02:00", "score": 62, "cost": 1.645, "reheat": "2026-10-18T16:00:00+02:00"}, {"start": "2026-10-18T16:00:00+02:00", "score": 43, "cost": 1.909, "reheat": "2026-10-18T17:00:00+02:00"}, {"start": "2026-10-18T17:00:00+02:00", "score": 26, "cost": 2.144, "reheat": "2026-10-18T18:00:00+02:00"}, {"start": "2026-10-18T18:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-18T19:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-18T20:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-18T21:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-18T22:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-18T23:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-19T00:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-19T01:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-19T02:00:00+02:00", "score": 91, "cost": 1.25, "reheat": "2026-10-19T02:00:00+02:00"}, {"start": "2026-10-19T03:00:00+02:00", "score": 93, "cost": 1.22, "reheat": "2026-10-19T03:00:00+02:00"}, {"start": "2026-10-19T04:00:00+02:00", "score": 88, "cost": 1.286, "reheat": "2026-10-19T04:00:00+02:00"}, {"start": "2026-10-19T05:00:00+02:00", "score": 56, "cost": 1.724, "reheat": "2026-10-19T06:00:00+02:00"}, {"start": "2026-10-19T06:00:00+02:00", "score": 37, "cost": 1.986, "reheat": "2026-10-19T07:00:00+02:00"}, {"start": "2026-10-19T07:00:00+02:00", "score": 28, "cost": 2.116, "reheat": "2026-10-19T08:00:00+02:00"}, {"start": "2026-10-19T08:00:00+02:00", "score": 32, "cost": 2.054, "reheat": "2026-10-19T09:00:00+02:00"}, {"start": "2026-10-19T09:00:00+02:00", "score": 45, "cost": 1.88, "reheat": "2026-10-19T10:00:00+02:00"}, {"start": "2026-10-19T10:00:00+02:00", "score": 56, "cost": 1.724, "reheat": "2026-10-19T11:00:00+02:00"}, {"start": "2026-10-19T11:00:00+02:00", "score": 62, "cost": 1.64, "reheat": "2026-10-19T12:00:00+02:00"}, {"start": "2026-10-19T12:00:00+02:00", "score": 64, "cost": 1.613, "reheat": "2026-10-19T13:00:00+02:00"}, {"start": "2026-10-19T13:00:00+02:00", "score": 64, "cost": 1.62, "reheat": "2026-10-19T14:00:00+02:00"}, {"start": "2026-10-19T14:00:00+02:00", "score": 59, "cost": 1.682, "reheat": "2026-10-19T15:00:00+02:00"}, {"start": "2026-10-19T15:00:00+02:00", "score": 46, "cost": 1.87, "reheat": "2026-10-19T16:00:00+02:00"}, {"start": "2026-10-19T16:00:00+02:00", "score": 21, "cost": 2.2, "reheat": "2026-10-19T17:00:00+02:00"}, {"start": "2026-10-19T17:00:00+02:00", "score": 0, "cost": 2.494, "reheat": "2026-10-19T18:00:00+02:00"}, {"start": "2026-10-19T18:00:00+02:00", "score": 0, "cost": 2.494, "reheat": "2026-10-19T19:00:00+02:00"}, {"start": "2026-10-19T19:00:00+02:00", "score": 21, "cost": 2.2, "reheat": "2026-10-19T20:00:00+02:00"}, {"start": "2026-10-19T20:00:00+02:00", "score": 46, "cost": 1.87, "reheat": "2026-10-19T21:00:00+02:00"}, {"start": "2026-10-19T21:00:00+02:00", "score": 59, "cost": 1.682, "reheat": "2026-10-19T22:00:00+02:00"}, {"start": "2026-10-19T22:00:00+02:00", "score": 64, "cost": 1.619, "reheat": "2026-10-19T23:00:00+02:00"}, {"start": "2026-10-19T23:00:00+02:00", "score": 64, "cost": 1.619, "reheat": "2026-10-19T23:00:00+02:00"}], "ev_kw": 11.0, "shower_delay_h": 1, "shower_scheduled": true, "best_ev_3h": {"start": "2026-10-19T02:00:00+02:00", "end": "2026-10-19T05:00:00+02:00", "score": 91}, "best_shower": {"start": "2026-10-19T03:00:00+02:00", "end": "2026-10-19T04:00:00+02:00", "score": 93}}, "flow": {"grid": 3.1, "solar": 2.4, "battery": 1.5, "soc": 62, "ev": 3.2, "heatpump": 1.2, "boiler": 1.9, "other": 0.5, "load": 7.0, "grid_known": true}, "consumers": [{"key": "heatpump", "name": "Värmepump", "kwh_today": 14.8, "cost_today": 17.2, "power_kw": 1.2}, {"key": "boiler", "name": "Varmvattenberedare", "kwh_today": 4.6, "cost_today": 3.9, "power_kw": 1.9}, {"key": "ev", "name": "Elbil", "kwh_today": 21.0, "cost_today": 16.5, "power_kw": 3.2}], "peak": {"top": [4.8, 4.2, 3.9], "billed_kw": 4.3, "cost": 210.7, "threshold": 3.9, "price_kr_kw": 49, "month": "2026-10"}, "model": {"samples": 132, "confidence": 0.79, "time_constant_h": 31.0, "thermal_error": 0.04, "energy_error": 0.09, "heat_loss_per_h": 0.032}, "sgf_overview": true};
+ const card = document.createElement('smart-grid-flow-card');
+ card.setConfig({});
+ document.getElementById('root').appendChild(card);
+ card.hass = { states: { 'sensor.smart_grid_flow_oversikt': { state: 'normal', last_updated: 'x', attributes: attrs } },
+   entities: {}, callService(){} };
+</script>
