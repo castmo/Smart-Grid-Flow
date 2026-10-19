@@ -4,9 +4,8 @@ Smart elstyrning för Home Assistant, på svenska. Visar värmepump, varmvattenb
 elpriser (nu och kommande) och förbrukning per stor förbrukare – och styr värmepumpen
 så att komforten hålls till lägsta möjliga kostnad.
 
-> **Status: 0.1.0 (första version).** Logiken (pris, modell, optimering, effekttoppar)
-> är enhetstestad, men integrationen är ännu inte provkörd i en riktig Home Assistant.
-> Börja gärna med styrning *avstängd* och jämför planen med verkligheten.
+> **Status: 0.1.2.** Logiken (pris, modell, optimering, effekttoppar, säsongsväxling)
+> är enhetstestad. Kortet registreras automatiskt som resurs i Home Assistant.
 
 ![Smart Grid Flow – exempelvy](docs/demo/screenshot.png)
 
@@ -19,19 +18,22 @@ så att komforten hålls till lägsta möjliga kostnad.
   (villa), alla justerbara i konfigurationen.
 - **Effekttariff:** följer månadens tre högsta timmedeleffekter (olika dygn) via en huvudmätare
   och håller värmepumpen under tröskeln när det lönar sig.
-- **Värmepumpsstyrning** med väderprognos (utetemperatur per timme), tre lägen:
-  *Lägsta pris*, *Balanserad*, *Stabil temperatur*.
+- **Värmepumpsstyrning** med väderprognos (utetemperatur per timme), fyra lägen:
+  *Lägsta pris*, *Balanserad*, *Stabil temperatur* samt *Bortaläge*.
+- **Termostatkort med tre temperaturer:** Visar *Aktuell innetemperatur* (mätning), *Önskad temperatur*
+  (justerbar med `+`/`−`) och *Inställt på pumpen* (faktiskt börvärde på WF-RAC samt plan nästa timme).
+- **Bortaläge (Bortaläge / Away mode):** Tvingar värmepumpen till värmeläge och sänker börvärdet till
+  underhållsvärme (~12 °C, justerbart) för att minimera energianvändningen.
+- **Automatisk säsongsväxling (värme/kyla):** Växlar automatiskt mellan `heat` och `cool` baserat på
+  ute- och innetemperatur med inbyggt hysteres- och tidsskydd för att undvika onödig pendling.
 - **Självlärande:** efter varje timme uppdateras två modeller (rekursiv minstakvadrat):
   husets värmeförlust/uppvärmning och värmepumpens förbrukning givet börvärde och utetemperatur.
 - **Varmvattenberedare:** kör de billigaste timmarna per dygn, med min/max-temperatur och legionellaskydd.
 - **Bästa tid att köra:** diagram (med markering för nu) över vilka timmar som är billigast för
   elbilsladdning och dusch. Duschens energi förbrukas när beredaren värmer upp *efteråt*, så för dusch
   visas priset vid uppvärmningstimmen (enligt beredarschemat om styrning är på, annars konfigurerbar fördröjning).
-- **Lovelace-kort** (registreras automatiskt): flödesbild, prisdiagram med planerat börvärde,
-  förbrukning per förbrukare, effektavgift och modellstatus.
 - **Animerat effektflöde:** elnät (köper/säljer), solceller, batteri (laddar/laddar ur, laddnivå),
-  värmepump, beredare, elbil och övrig last. Linjerna animeras i flödesriktningen och snabbare vid högre effekt.
-  Solceller/batteri/elbil visas när du anger deras effektsensorer (W/kW) i konfigurationen.
+  värmepump, beredare, elbil och övrig last med stor, tydlig text anpassad för mobiler.
 - **Utbyggbart** för solceller, batteri och elbilsladdare (se `core/devices.py`).
 
 ## Hur kopplas värmepumpen? (Mitsubishi WF-RAC)
@@ -42,7 +44,7 @@ befintliga [WF-RAC-integration](https://github.com/blues-sechseck/Mitsubishi-WF-
 
 | Behov | WF-RAC-entitet | Används till |
 |---|---|---|
-| Styrning | `climate.*` | `climate.set_temperature` (endast när läget är *värme*) |
+| Styrning | `climate.*` | `climate.set_temperature` / `climate.set_hvac_mode` |
 | Innetemperatur | `sensor.*` inomhus | Starttillstånd + inlärning |
 | Utetemperatur | `sensor.*` utomhus | Inlärning (prognosen kommer från `weather`) |
 | Energi | `sensor.*` energi (kWh) | Lär in förbrukning vid givet börvärde; kostnad per dygn |
@@ -51,17 +53,24 @@ Vid installation söker konfigurationsflödet upp dessa entiteter automatiskt. A
 sensorn för **total energi** – enhetens egen räknare nollställs vid varje start, och WF-RAC
 erbjuder därför en ackumulerad totalsensor. Räknare som minskar ignoreras.
 
-Eftersom WF-RAC bara tar emot ett *börvärde* (inte effekt) modelleras värmepumpen som en
-termostat: förbrukningen beror på `börvärde − innetemperatur` och `innetemp − utetemp`.
-Optimeraren väljer ett börvärde per timme (dynamisk programmering över upp till 36 h).
+## Installation & Lovelace-resurser
 
-## Installation
-
-1. HACS → Anpassade arkiv → `https://github.com/castmo/Smart-Grid-Flow` (Integration).
-2. Starta om Home Assistant.
-3. Inställningar → Enheter & tjänster → Lägg till integration → **Smart Grid Flow**.
-4. Lägg till kortet: `type: custom:smart-grid-flow-card` (se `dashboards/smart_grid_flow.yaml`).
-5. Slå på **Styr värmepump** när planen ser rimlig ut.
+1. HACS → Tre prickar uppe till höger → **Anpassade arkiv** → Lägg till `https://github.com/castmo/Smart-Grid-Flow` (Kategori: *Integration*).
+2. Ladda ner / Uppdatera till version **0.1.2** i HACS.
+3. Starta om Home Assistant.
+4. **Viktigt:** Gå till **Inställningar → Enheter & tjänster → Lägg till integration → Sök "Smart Grid Flow"**.
+   *(Kortet laddas automatiskt in när integrationen har lagts till).*
+5. Om du får felmeddelandet `Custom element doesn't exist: smart-grid-flow-card` i Lovelace:
+   - Gå till **Inställningar → Instrumentpaneler (Dashboards) → Resurser** (eller tre punkter uppe i högra hörnet på instrumentpanelen → Hantera resurser).
+   - Kontrollera att resursen finns:
+     - URL: `/smart_grid_flow/smart-grid-flow-card.js` (eller `/local/smart_grid_flow/smart-grid-flow-card.js`)
+     - Resurstyp: *JavaScript-modul*.
+   - Rensa webbläsarens cache eller gör en hård omladdning (Shift+F5 i webbläsaren, eller dra neråt i HA Companion-appen).
+6. Lägg till kortet i dashboarden:
+   ```yaml
+   type: custom:smart-grid-flow-card
+   ```
+7. Slå på **Styr värmepump** när planen ser rimlig ut.
 
 ## Inställningar
 

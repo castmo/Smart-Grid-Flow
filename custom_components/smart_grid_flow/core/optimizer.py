@@ -18,6 +18,7 @@ class Mode(StrEnum):
     PRICE = "price"  # Lägsta pris
     BALANCED = "balanced"  # Balanserad
     STABLE = "stable"  # Stabil temperatur
+    AWAY = "away"  # Bortaläge (underhållsvärme ~12°C)
 
 
 # (w_target, w_below, w_above) – SEK per °C² och timme.
@@ -25,6 +26,7 @@ MODE_WEIGHTS: dict[Mode, tuple[float, float, float]] = {
     Mode.PRICE: (0.04, 6.0, 1.0),
     Mode.BALANCED: (0.6, 12.0, 2.0),
     Mode.STABLE: (4.0, 30.0, 6.0),
+    Mode.AWAY: (0.02, 12.0, 0.4),
 }
 
 
@@ -41,6 +43,7 @@ class Settings:
     peak_threshold_kw: float = 99.0  # nuvarande 3:e högsta timtopp
     base_load_kw: float = 0.5  # husets övriga last (för effektberäkning)
     t_grid_step: float = 0.1
+    is_cooling: bool = False  # True om vi kör kyla (sommartid)
 
 
 @dataclass

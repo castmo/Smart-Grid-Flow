@@ -54,4 +54,12 @@ MODE_LABELS_SV = {
     "price": "Lägsta pris",
     "balanced": "Balanserad",
     "stable": "Stabil temperatur",
+    "away": "Bortaläge",
 }
+
+# Säsongsväxling och bortaläge
+CONF_AWAY_TARGET = "away_target"
+CONF_AUTO_SEASON = "auto_season"
+CONF_COOLING_OUTDOOR_THRESHOLD = "cooling_outdoor_threshold"
+CONF_HEATING_OUTDOOR_THRESHOLD = "heating_outdoor_threshold"
+

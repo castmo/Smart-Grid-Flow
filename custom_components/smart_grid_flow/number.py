@@ -15,6 +15,7 @@ NUMBERS = (
     ("comfort_min", 12.0, 24.0, 0.5),
     ("setpoint_min", 10.0, 25.0, 0.5),
     ("setpoint_max", 18.0, 31.0, 0.5),
+    ("away_target", 8.0, 18.0, 0.5),
 )
 
 

@@ -138,3 +138,14 @@ def test_ev_peak_penalty():
     ev = ev_suitability(st, 7.4, {st[0].start: 3.0}, 0.5, 5.0, 49)
     assert ev[0]["cost"] >= ev[1]["cost"] > 1.0  # straff över tröskeln, begränsad till 1 kr/kWh
     assert ev[1]["cost"] <= 2.0 + 1e-9
+
+
+def test_away_mode():
+    prices = [3.0] * 6 + [0.3] * 6 + [3.0] * 12
+    cfg = Settings(target=12.0, comfort_min=10.0, comfort_max=15.0, setpoint_min=10.0, setpoint_max=18.0, mode=Mode.AWAY)
+    plan = optimize(12.0, steps(prices, t_out=0.0), ThermalModel(), EnergyModel(), cfg)
+    assert plan.setpoint_now is not None
+    assert all(p.setpoint <= 18.0 for p in plan.steps)
+    assert all(p.t_in >= 9.0 for p in plan.steps)
+
+

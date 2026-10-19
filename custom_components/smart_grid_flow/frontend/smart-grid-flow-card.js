@@ -1,21 +1,16 @@
 /*
  * Smart Grid Flow – Lovelace-kort (svenska)
  *
- * Visar värmepump, varmvattenberedare, elpriser (nu och kommande),
- * energiförbrukning per stor förbrukare, effektavgift och modellens status.
- * Registreras automatiskt av integrationen. Lägg till på en dashboard med:
- *
- *   type: custom:smart-grid-flow-card
- *
- * Valfritt: `entity: sensor.<översiktssensor>` om automatisk sökning inte räcker.
- * Nya förbrukare (sol, batteri, elbilsladdare) ritas automatiskt när integrationen
- * rapporterar dem under `consumers`.
+ * Visar värmepump (med termostat: önskad, inställd och faktisk temp),
+ * bortaläge, automatisk säsongsväxling, varmvattenberedare, elpriser,
+ * animerat effektflöde med tydlig text för mobil, förbrukning och effektavgift.
  */
-const SGF_ICONS = { heatpump: "🌡️", boiler: "🚿", solar: "☀️", battery: "🔋", ev: "🚗" };
+const SGF_ICONS = { heatpump: "🌡️", boiler: "🚿", solar: "☀️", battery: "🔋", ev: "🚗", other: "🏠" };
 const SGF_MODES = [
   ["price", "Lägsta pris"],
   ["balanced", "Balanserad"],
   ["stable", "Stabil temp."],
+  ["away", "🏖️ Bortaläge"],
 ];
 
 class SmartGridFlowCard extends HTMLElement {
@@ -25,7 +20,7 @@ class SmartGridFlowCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 9;
+    return 10;
   }
 
   static getStubConfig() {
@@ -35,7 +30,7 @@ class SmartGridFlowCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     const st = this._find();
-    const sig = st ? st.last_updated + JSON.stringify(st.state) : "none";
+    const sig = st ? st.last_updated + JSON.stringify(st.state) + JSON.stringify(st.attributes.hp) : "none";
     if (sig === this._sig) return;
     this._sig = sig;
     this._render(st);
@@ -46,7 +41,7 @@ class SmartGridFlowCard extends HTMLElement {
     const h = this._hass;
     if (this._config.entity) return h.states[this._config.entity];
     const id = Object.keys(h.states).find(
-      (k) => k.startsWith("sensor.") && h.states[k].attributes.sgf_overview
+      (k) => k.startsWith("sensor.") && h.states[k].attributes && h.states[k].attributes.sgf_overview
     );
     this._overviewId = id;
     return id ? h.states[id] : undefined;
@@ -56,7 +51,10 @@ class SmartGridFlowCard extends HTMLElement {
     const h = this._hass;
     const id = this._config.entity || this._overviewId;
     const dev = h.entities && h.entities[id] && h.entities[id].device_id;
-    if (!dev) return undefined;
+    if (!dev) {
+      // Fallback: sök på translationsnyckel eller entitets-id
+      return Object.keys(h.states).find((e) => e.startsWith(domain + ".smart_grid_flow_" + key));
+    }
     return Object.keys(h.entities).find(
       (e) =>
         e.startsWith(domain + ".") &&
@@ -75,19 +73,30 @@ class SmartGridFlowCard extends HTMLElement {
       : Number(v).toLocaleString("sv-SE", { minimumFractionDigits: d, maximumFractionDigits: d });
   }
 
+  _hh(iso) {
+    return String(new Date(iso).getHours()).padStart(2, "0");
+  }
+
   /* ---------- rendering ---------- */
   _render(st) {
     if (!st) {
-      this.shadowRoot.innerHTML = `<ha-card><div style="padding:16px">Smart Grid Flow: hittar ingen översiktssensor.</div></ha-card>`;
+      this.shadowRoot.innerHTML = `<ha-card><div style="padding:20px;text-align:center">
+        <b>Smart Grid Flow</b>: Hittar ingen översiktssensor.<br>
+        <span style="font-size:0.85em;color:var(--secondary-text-color)">
+          Se till att integrationen är tillagd under Inställningar → Enheter & tjänster.
+        </span>
+      </div></ha-card>`;
       return;
     }
-    const a = st.attributes;
+    const a = st.attributes || {};
     const price = a.price || {};
     const hp = a.hp || {};
     const consumers = a.consumers || [];
     const peak = a.peak || {};
     const model = a.model || {};
     const boiler = a.boiler || {};
+    const flow = a.flow || {};
+    const suitability = a.suitability || {};
 
     this.shadowRoot.innerHTML = `
       <style>${this._css()}</style>
@@ -98,8 +107,13 @@ class SmartGridFlowCard extends HTMLElement {
             ${this._fmt(price.total)} kr/kWh · ${price.level || "–"}
           </div>
         </div>
-        ${this._flow(hp, boiler, consumers, a.flow)}
-        ${this._controls(hp)}
+
+        <!-- Flödesdiagram med stor text och tydliga ikoner för mobil -->
+        ${this._flow(hp, boiler, consumers, flow)}
+
+        <!-- Termostatkort med alla tre temperaturer (önskad, aktuell, inställd på pumpen) -->
+        ${this._thermostat(hp)}
+
         <h3>Elpris – ${price.tomorrow_available ? "idag & imorgon" : "idag"}</h3>
         ${this._chart(a.prices || [], price, hp.plan || [])}
         <div class="legend">
@@ -108,91 +122,188 @@ class SmartGridFlowCard extends HTMLElement {
           <span><i class="dot dyr"></i>Dyr</span>
           <span><i class="line"></i>Planerat börvärde</span>
         </div>
+
         <h3>Bästa tid att köra stora förbrukare</h3>
-        ${this._suit(a.suitability || {})}
+        ${this._suit(suitability)}
+
         <h3>Förbrukning idag</h3>
         ${this._consumption(consumers)}
+
         <h3>Effektavgift (${peak.month || "–"})</h3>
         ${this._peak(peak)}
+
         <h3>Självlärande modell</h3>
         ${this._model(model, hp)}
       </ha-card>`;
     this._bind();
   }
 
+  /* ---------- Animerat effektflöde med stor text ---------- */
   _flow(hp, boiler, consumers, f) {
     f = f || {};
-    const W = 420, H = 335;
-    const hub = { x: 210, y: 150 };
+    const W = 440, H = 360;
+    const hub = { x: 220, y: 180 };
     const has = (k) => f[k] !== null && f[k] !== undefined;
     const fmt = (v) => this._fmt(Math.abs(v || 0), 2) + " kW";
-    // Källor/lagring (övre raden) och förbrukare (nedre raden).
+
     const top = [];
     if (has("solar")) top.push({ k: "solar", ico: "☀️", name: "Solceller", kw: f.solar, dir: "in" });
-    top.push({ k: "grid", ico: "🔌", name: "Elnät", kw: f.grid, dir: f.grid >= 0 ? "in" : "out",
-      sub: f.grid >= 0 ? "köper" : "säljer" });
-    if (has("battery")) top.push({ k: "battery", ico: "🔋", name: "Batteri", kw: f.battery,
-      dir: f.battery > 0 ? "out" : "in", sub: (f.battery > 0.05 ? "laddar" : f.battery < -0.05 ? "laddar ur" : "vilar") +
-      (has("soc") ? ` · ${this._fmt(f.soc, 0)}%` : "") });
+    top.push({
+      k: "grid", ico: "🔌", name: "Elnät", kw: f.grid,
+      dir: (f.grid || 0) >= 0 ? "in" : "out",
+      sub: (f.grid || 0) >= 0 ? "köper" : "säljer"
+    });
+    if (has("battery")) top.push({
+      k: "battery", ico: "🔋", name: "Batteri", kw: f.battery,
+      dir: (f.battery || 0) > 0 ? "out" : "in",
+      sub: ((f.battery || 0) > 0.05 ? "laddar" : (f.battery || 0) < -0.05 ? "laddar ur" : "vilar") +
+        (has("soc") ? ` · ${this._fmt(f.soc, 0)}%` : "")
+    });
+
     const bot = [];
-    let sub = "";
-    if (hp.indoor != null) sub = `${this._fmt(hp.indoor, 1)}° → ${this._fmt(hp.setpoint, 1)}°`;
-    bot.push({ k: "heatpump", ico: "🌡️", name: "Värmepump", kw: f.heatpump, sub });
-    bot.push({ k: "boiler", ico: "🚿", name: "Beredare", kw: f.boiler,
-      sub: boiler.temp != null ? `${this._fmt(boiler.temp, 0)}°C` : boiler.on ? "på" : "" });
+    let hpSub = "";
+    if (hp.indoor != null && hp.setpoint != null) hpSub = `${this._fmt(hp.indoor, 1)}° → ${this._fmt(hp.setpoint, 1)}°`;
+    else if (hp.indoor != null) hpSub = `${this._fmt(hp.indoor, 1)}°C`;
+    bot.push({ k: "heatpump", ico: "🌡️", name: "Värmepump", kw: f.heatpump, sub: hpSub });
+
+    let bSub = "";
+    if (boiler.temp != null) bSub = `${this._fmt(boiler.temp, 0)}°C`;
+    else if (boiler.on) bSub = "på";
+    bot.push({ k: "boiler", ico: "🚿", name: "Beredare", kw: f.boiler, sub: bSub });
+
     if (has("ev")) bot.push({ k: "ev", ico: "🚗", name: "Elbil", kw: f.ev });
     bot.push({ k: "other", ico: "🏠", name: "Övrigt", kw: f.other });
+
     const place = (arr, y) => arr.map((n, i) => ({ ...n, x: (W / (arr.length + 1)) * (i + 1), y }));
-    const T = place(top, 62), B = place(bot, 262);
-    const dur = (kw) => Math.max(0.5, Math.min(4, 2.4 / Math.max(Math.abs(kw), 0.05))).toFixed(2);
-    // Banan ritas alltid i flödesriktningen så att animationen följer strömmen.
+    const T = place(top, 76), B = place(bot, 275);
+    const dur = (kw) => Math.max(0.5, Math.min(4, 2.4 / Math.max(Math.abs(kw || 0), 0.05))).toFixed(2);
+
     const wire = (from, to, kw, cls) => {
-      const act = Math.abs(kw) > 0.05;
+      const act = Math.abs(kw || 0) > 0.05;
       const my = (from.y + to.y) / 2;
       return `<path d="M${from.x},${from.y} C${from.x},${my} ${to.x},${my} ${to.x},${to.y}"
         class="wire ${act ? "active " + cls : ""}" style="animation-duration:${dur(kw)}s"/>`;
     };
+
     let svg = `<svg viewBox="0 0 ${W} ${H}" class="flow">`;
     T.forEach((n) => {
-      const hubTop = { x: hub.x, y: hub.y - 26 }, nb = { x: n.x, y: n.y + 26 };
+      const hubTop = { x: hub.x, y: hub.y - 32 }, nb = { x: n.x, y: n.y + 30 };
       svg += n.dir === "in" ? wire(nb, hubTop, n.kw, n.k) : wire(hubTop, nb, n.kw, n.k);
     });
     B.forEach((n) => {
-      svg += wire({ x: hub.x, y: hub.y + 26 }, { x: n.x, y: n.y - 26 }, n.kw, n.k);
+      svg += wire({ x: hub.x, y: hub.y + 32 }, { x: n.x, y: n.y - 30 }, n.kw, n.k);
     });
-    svg += `<circle cx="${hub.x}" cy="${hub.y}" r="26" class="node hub"/>
-      <text x="${hub.x}" y="${hub.y + 2}" class="ico">🏠</text>
-      <text x="${hub.x}" y="${hub.y + 16}" class="sub">${fmt(f.load)}</text>`;
+
+    // Central hub (huset)
+    svg += `<g><circle cx="${hub.x}" cy="${hub.y}" r="32" class="node hub"/>
+      <text x="${hub.x}" y="${hub.y - 4}" class="ico">🏠</text>
+      <text x="${hub.x}" y="${hub.y + 16}" class="hub-load">${fmt(f.load)}</text></g>`;
+
+    // Noder
     [...T, ...B].forEach((n) => {
       const on = Math.abs(n.kw || 0) > 0.05;
-      const up = n.y < hub.y;
-      const ly = up ? n.y - 42 : n.y + 42;
-      svg += `<g><circle cx="${n.x}" cy="${n.y}" r="24" class="node ${on ? "on " + n.k : ""}"/>
-        <text x="${n.x}" y="${n.y + 7}" class="ico">${n.ico}</text>
-        <text x="${n.x}" y="${ly}" class="lbl">${n.name}</text>
-        <text x="${n.x}" y="${up ? n.y - 30 : ly + 12}" class="sub">${fmt(n.kw)}${up && n.sub ? " · " + n.sub : ""}</text>
-        ${!up && n.sub ? `<text x="${n.x}" y="${ly + 24}" class="sub">${n.sub}</text>` : ""}</g>`;
+      const isTop = n.y < hub.y;
+      svg += `<g><circle cx="${n.x}" cy="${n.y}" r="28" class="node ${on ? "on " + n.k : ""}"/>
+        <text x="${n.x}" y="${n.y + 8}" class="ico">${n.ico}</text>`;
+      if (isTop) {
+        svg += `<text x="${n.x}" y="${n.y - 36}" class="lbl">${n.name}</text>
+          <text x="${n.x}" y="${n.y - 50}" class="sub">${fmt(n.kw)}</text>
+          ${n.sub ? `<text x="${n.x}" y="${n.y - 64}" class="sub" style="font-size:11px">${n.sub}</text>` : ""}</g>`;
+      } else {
+        svg += `<text x="${n.x}" y="${n.y + 40}" class="lbl">${n.name}</text>
+          <text x="${n.x}" y="${n.y + 54}" class="sub">${fmt(n.kw)}</text>
+          ${n.sub ? `<text x="${n.x}" y="${n.y + 68}" class="sub" style="font-size:11px">${n.sub}</text>` : ""}</g>`;
+      }
     });
     return svg + `</svg>`;
   }
 
-  _controls(hp) {
-    const modes = SGF_MODES.map(
-      ([k, l]) => `<button data-mode="${k}" class="${hp.mode === k ? "sel" : ""}">${l}</button>`
-    ).join("");
-    return `<div class="controls">
-      <div class="modes">${modes}</div>
-      <div class="row">
-        <label class="sw"><input type="checkbox" id="hpctl" ${hp.control ? "checked" : ""}/> Styr värmepump</label>
-        <div class="target">Önskad temp
-          <button id="tdn">−</button><b>${this._fmt(hp.target, 1)}°</b><button id="tup">+</button>
+  /* ---------- Termostat med tre temperaturer & bortaläge ---------- */
+  _thermostat(hp) {
+    const isAway = Boolean(hp.away || hp.mode === "away");
+    const isCool = Boolean(hp.is_cooling || hp.hvac_mode === "cool");
+    const targetVal = isAway ? (hp.away_target || 12.0) : (hp.target != null ? hp.target : 21.0);
+
+    let badgeText = "🔥 Värmeläge aktivt";
+    let badgeClass = "heat";
+    if (isAway) {
+      badgeText = "🏖️ Bortaläge aktivt · Underhållsvärme 12°C (endast värme)";
+      badgeClass = "away";
+    } else if (isCool) {
+      badgeText = "❄️ Kylläge aktivt (sommartid)";
+      badgeClass = "cool";
+    } else if (hp.hvac_mode === "off") {
+      badgeText = "⏸️ Värmepump avstängd";
+      badgeClass = "idle";
+    }
+
+    const modes = SGF_MODES.map(([k, l]) => {
+      const active = isAway ? (k === "away") : (hp.mode === k);
+      return `<button data-mode="${k}" class="${active ? "sel" : ""}">${l}</button>`;
+    }).join("");
+
+    return `
+      <div class="thermo-wrap">
+        <div class="thermo-header">
+          <div class="thermo-badge ${badgeClass}">${badgeText}</div>
+          ${hp.outdoor != null ? `<div class="thermo-out">🌤️ Ute: <b>${this._fmt(hp.outdoor, 1)}°C</b></div>` : ""}
+        </div>
+
+        <div class="thermo-main">
+          <!-- 1. Aktuell uppmätt innetemperatur -->
+          <div class="thermo-card">
+            <div class="t-label">🏠 Aktuell innetemp</div>
+            <div class="t-val">${this._fmt(hp.indoor, 1)}°C</div>
+            <div class="t-sub">mätning rumsgivare</div>
+          </div>
+
+          <!-- 2. Önskad måltemperatur (med justeringsknappar) -->
+          <div class="thermo-dial ${isAway ? "away" : ""}">
+            <div class="t-label">${isAway ? "Bortaläge måltemp" : "Önskad temperatur"}</div>
+            <div class="thermo-stepper">
+              <button id="tdn" title="Sänk önskad temperatur">−</button>
+              <div class="t-val">${this._fmt(targetVal, 1)}°</div>
+              <button id="tup" title="Höj önskad temperatur">+</button>
+            </div>
+            <div class="t-sub">${isAway ? "Minimal elförbrukning" : "Komfortmål innetemp"}</div>
+          </div>
+
+          <!-- 3. Inställt börvärde på värmepumpen just nu -->
+          <div class="thermo-card">
+            <div class="t-label">🎯 Inställt på pumpen</div>
+            <div class="t-val">${this._fmt(hp.setpoint, 1)}°C</div>
+            <div class="t-sub">
+              ${hp.plan_setpoint != null ? `Plan nästa h: <b>${this._fmt(hp.plan_setpoint, 1)}°</b>` : "värmepumpens börvärde"}
+            </div>
+          </div>
+        </div>
+
+        <!-- Val av optimeringsläge inkl bortaläge -->
+        <div class="modes">${modes}</div>
+
+        <!-- Styrningsalternativ & säsongsväxling -->
+        <div class="row controls-row">
+          <label class="sw">
+            <input type="checkbox" id="hpctl" ${hp.control ? "checked" : ""}/>
+            <b>Styr värmepump</b>
+          </label>
+          <label class="sw">
+            <input type="checkbox" id="seasonctl" ${hp.auto_season ? "checked" : ""}/>
+            <span>Säsongsväxling (värme/kyla)</span>
+          </label>
+        </div>
+
+        <div class="muted">
+          ${isAway
+            ? "Bortaläge: Värmepumpen hålls i värmeläge med lågt börvärde (~12°C) och beredaren i underhållsläge för att minimera elförbrukningen."
+            : `Planerat börvärde nu: <b>${this._fmt(hp.plan_setpoint, 1)}°</b> · Beräknad besparing 36 h: <b>${this._fmt(hp.plan_savings, 2)} kr</b>`
+          }
         </div>
       </div>
-      <div class="muted">Planerat börvärde nu: <b>${this._fmt(hp.plan_setpoint, 1)}°</b> ·
-        Beräknad besparing 36 h: <b>${this._fmt(hp.plan_savings, 2)} kr</b></div>
-    </div>`;
+    `;
   }
 
+  /* ---------- Prisdiagram ---------- */
   _chart(prices, price, plan) {
     if (!prices.length) return `<div class="muted">Inga priser hämtade ännu.</div>`;
     const W = 420, H = 150, pl = 4, pr = 26, pt = 8, pb = 18;
@@ -213,7 +324,7 @@ class SmartGridFlowCard extends HTMLElement {
       bars += `<rect x="${x + 0.5}" y="${H - pb - h}" width="${bw - 1}" height="${h}" class="bar ${cls} ${t + 3600000 <= now ? "past" : ""} ${cur ? "cur" : ""}">
         <title>${new Date(t).toLocaleString("sv-SE", { weekday: "short", hour: "2-digit", minute: "2-digit" })}: ${this._fmt(p.total)} kr/kWh (spot ${this._fmt(p.spot)})</title></rect>`;
       if (planMap[t] !== undefined) {
-        const y = pt + (1 - (planMap[t] - 17) / 9) * (H - pt - pb);
+        const y = pt + (1 - (planMap[t] - 10) / 18) * (H - pt - pb);
         pts.push(`${x + bw / 2},${y}`);
       }
       if (new Date(t).getHours() % 6 === 0)
@@ -228,10 +339,7 @@ class SmartGridFlowCard extends HTMLElement {
       <text x="${W - pr + 3}" y="${H - pb}" class="ax">0</text></svg>`;
   }
 
-  _hh(iso) {
-    return String(new Date(iso).getHours()).padStart(2, "0");
-  }
-
+  /* ---------- Bästa tid att köra stora förbrukare ---------- */
   _strip(items, label, icon, best, tip) {
     if (!items.length) return "";
     const W = 420, pl = 4, pr = 4, H = 54;
@@ -259,16 +367,17 @@ class SmartGridFlowCard extends HTMLElement {
   }
 
   _suit(s) {
-    if (!s.ev) return `<div class="muted">Väntar på elpriser…</div>`;
+    if (!s || !s.ev) return `<div class="muted">Väntar på elpriser…</div>`;
     const ev = this._strip(s.ev, `Elbilsladdning (${this._fmt(s.ev_kw, 1)} kW)`, "🚗", s.best_ev_3h,
       (it) => `${this._hh(it.start)}:00 – ${this._fmt(it.cost)} kr/kWh inkl. ev. effekttopp · lämplighet ${it.score}%`);
     const sh = this._strip(s.shower, "Dusch", "🚿", s.best_shower,
       (it) => `Dusch ${this._hh(it.start)}:00 → beredaren värms ca kl ${this._hh(it.reheat)}:00 (${this._fmt(it.cost)} kr/kWh) · lämplighet ${it.score}%`);
     return `${ev}${sh}
       <div class="muted">Grönt = billigt, rött = dyrt. Duschens energi förbrukas när beredaren värmer upp efteråt
-      (${s.shower_scheduled ? "enligt schemat för beredaren" : "ca " + s.shower_delay_h + " h efter duschen"}), så diagrammet visar priset vid uppvärmningen.</div>`;
+      (${s.shower_scheduled ? "enligt beredarens schema" : "ca " + s.shower_delay_h + " h efter duschen"}), så diagrammet visar priset vid uppvärmningen.</div>`;
   }
 
+  /* ---------- Förbrukning idag ---------- */
   _consumption(consumers) {
     if (!consumers.length) return `<div class="muted">Inga energisensorer konfigurerade.</div>`;
     const max = Math.max(...consumers.map((c) => c.kwh_today || 0), 0.1);
@@ -282,12 +391,15 @@ class SmartGridFlowCard extends HTMLElement {
       .join("");
   }
 
+  /* ---------- Effektavgift ---------- */
   _peak(p) {
-    const top = (p.top || []).map((v) => `<span class="pk">${this._fmt(v)} kW</span>`).join("") || "<span class='muted'>Inga toppar registrerade (konfigurera huvudmätare)</span>";
+    const top = (p.top || []).map((v) => `<span class="pk">${this._fmt(v)} kW</span>`).join("") ||
+      "<span class='muted'>Inga toppar registrerade (konfigurera huvudmätare)</span>";
     return `<div>${top}</div><div class="muted">Debiteras: <b>${this._fmt(p.billed_kw)} kW</b> × ${this._fmt(p.price_kr_kw, 0)} kr = <b>${this._fmt(p.cost, 0)} kr</b>.
       Håll timmedeleffekt under <b>${this._fmt(p.threshold)} kW</b> för att undvika högre avgift.</div>`;
   }
 
+  /* ---------- Modellstatus ---------- */
   _model(m, hp) {
     const pct = Math.round((m.confidence || 0) * 100);
     return `<div class="cbar"><div style="width:${pct}%"></div></div>
@@ -295,82 +407,384 @@ class SmartGridFlowCard extends HTMLElement {
       temperaturfel ${this._fmt(m.thermal_error, 2)} °C/h · utetemp ${this._fmt(hp.outdoor, 1)}°C</div>`;
   }
 
+  /* ---------- Event listeners ---------- */
   _bind() {
     const r = this.shadowRoot;
+
+    // Lägesväljare (Lägsta pris, Balanserad, Stabil temp, Bortaläge)
     r.querySelectorAll("[data-mode]").forEach((b) =>
       b.addEventListener("click", () => {
-        const e = this._sibling("select", "mode");
-        const label = SGF_MODES.find((m) => m[0] === b.dataset.mode)[1];
-        const full = { price: "Lägsta pris", balanced: "Balanserad", stable: "Stabil temperatur" }[b.dataset.mode];
-        if (e) this._call("select", "select_option", { entity_id: e, option: full || label });
+        const mode = b.dataset.mode;
+        const eSelect = this._sibling("select", "mode");
+        const fullLabels = {
+          price: "Lägsta pris",
+          balanced: "Balanserad",
+          stable: "Stabil temperatur",
+          away: "Bortaläge",
+        };
+        const label = fullLabels[mode] || mode;
+
+        if (eSelect) {
+          this._call("select", "select_option", { entity_id: eSelect, option: label });
+        }
+
+        // Synka även switch.away_mode
+        const eAway = this._sibling("switch", "away_mode");
+        if (eAway) {
+          this._call("switch", mode === "away" ? "turn_on" : "turn_off", { entity_id: eAway });
+        }
       })
     );
+
+    // Styr värmepump toggle
     const ctl = r.getElementById("hpctl");
-    if (ctl)
+    if (ctl) {
       ctl.addEventListener("change", () => {
         const e = this._sibling("switch", "hp_control");
         if (e) this._call("switch", ctl.checked ? "turn_on" : "turn_off", { entity_id: e });
       });
+    }
+
+    // Säsongsväxling toggle
+    const seasonCtl = r.getElementById("seasonctl");
+    if (seasonCtl) {
+      seasonCtl.addEventListener("change", () => {
+        const e = this._sibling("switch", "auto_season");
+        if (e) this._call("switch", seasonCtl.checked ? "turn_on" : "turn_off", { entity_id: e });
+      });
+    }
+
+    // Justera önskad temperatur
     const step = (d) => {
-      const e = this._sibling("number", "target");
+      const st = this._find();
+      const isAway = Boolean(st && st.attributes && st.attributes.hp && (st.attributes.hp.away || st.attributes.hp.mode === "away"));
+      const numKey = isAway ? "away_target" : "target";
+      const e = this._sibling("number", numKey) || this._sibling("number", "target");
       if (!e) return;
-      const cur = parseFloat(this._hass.states[e].state);
-      this._call("number", "set_value", { entity_id: e, value: cur + d });
+      const cur = parseFloat(this._hass.states[e].state) || (isAway ? 12.0 : 21.0);
+      this._call("number", "set_value", { entity_id: e, value: Math.round((cur + d) * 2) / 2 });
     };
-    const up = r.getElementById("tup"), dn = r.getElementById("tdn");
+
+    const up = r.getElementById("tup");
+    const dn = r.getElementById("tdn");
     if (up) up.addEventListener("click", () => step(0.5));
     if (dn) dn.addEventListener("click", () => step(-0.5));
   }
 
+  /* ---------- Stilar ---------- */
   _css() {
     return `
-    ha-card{display:block;padding:12px 16px 16px;--c-low:#2e9e5b;--c-mid:#e0a800;--c-high:#d64545;--c-acc:var(--primary-color)}
-    .head{display:flex;justify-content:space-between;align-items:center}
-    .title{font-size:1.2em;font-weight:600}
-    h3{margin:16px 0 6px;font-size:.95em;font-weight:600;color:var(--secondary-text-color);text-transform:uppercase;letter-spacing:.04em}
-    .chip{padding:4px 10px;border-radius:14px;color:#fff;font-weight:600;background:var(--c-mid)}
-    .chip.billig{background:var(--c-low)} .chip.dyr{background:var(--c-high)}
-    svg{width:100%;height:auto;display:block}
-    .flow .node{fill:var(--card-background-color);stroke:var(--divider-color);stroke-width:2}
-    .flow .node.on{stroke:var(--c-acc)} .flow .hub{stroke:var(--c-acc)}
-    .ico{font-size:20px;text-anchor:middle} .lbl{font-size:11px;text-anchor:middle;fill:var(--primary-text-color);font-weight:600}
-    .sub{font-size:10px;text-anchor:middle;fill:var(--secondary-text-color)}
-    .wire{fill:none;stroke:var(--divider-color);stroke-width:2}
-    .wire.active{stroke:var(--c-acc);stroke-dasharray:6 6;animation:flow linear infinite}
-    .wire.active.solar{stroke:#f2b01e} .wire.active.battery{stroke:var(--c-low)} .wire.active.grid{stroke:#4a90d9} .wire.active.ev{stroke:#9b59b6} .wire.active.boiler{stroke:#e67e22}
-    .flow .node.on.solar{stroke:#f2b01e} .flow .node.on.battery{stroke:var(--c-low)} .flow .node.on.grid{stroke:#4a90d9}
-    @keyframes flow{to{stroke-dashoffset:-12}}
-    .bar{fill:var(--c-mid)} .bar.billig{fill:var(--c-low)} .bar.dyr{fill:var(--c-high)}
-    .bar.past{opacity:.35} .bar.cur{stroke:var(--primary-text-color);stroke-width:1.5}
-    .plan{fill:none;stroke:var(--c-acc);stroke-width:2;stroke-linejoin:round}
-    .now{stroke:var(--primary-text-color);stroke-dasharray:3 3;opacity:.7}
-    .ax{font-size:9px;fill:var(--secondary-text-color)}
-    .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:.8em;color:var(--secondary-text-color);margin-top:4px}
-    .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;background:var(--c-mid)}
-    .dot.billig{background:var(--c-low)} .dot.dyr{background:var(--c-high)}
-    .line{display:inline-block;width:14px;height:0;border-top:2px solid var(--c-acc);margin-right:4px;vertical-align:middle}
-    .srow{display:flex;justify-content:space-between;margin-top:6px;font-size:.9em}
-    .strip{margin-bottom:2px}
-    .controls{margin-top:8px}
-    .modes{display:flex;gap:6px} .modes button{flex:1}
-    button{border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);border-radius:8px;padding:6px 10px;cursor:pointer}
-    button.sel{background:var(--c-acc);color:#fff;border-color:var(--c-acc)}
-    .row{display:flex;justify-content:space-between;align-items:center;margin:8px 0;gap:8px;flex-wrap:wrap}
-    .target button{width:30px;margin:0 6px}
-    .muted{color:var(--secondary-text-color);font-size:.85em;margin-top:4px}
-    .cons{display:grid;grid-template-columns:150px 1fr 150px;gap:8px;align-items:center;margin:4px 0;font-size:.9em}
-    .cbar{height:8px;border-radius:4px;background:var(--divider-color);overflow:hidden}
-    .cbar div{height:100%;background:var(--c-acc)}
-    .cval{text-align:right}
-    .pk{display:inline-block;margin:0 6px 4px 0;padding:3px 9px;border-radius:12px;background:var(--secondary-background-color);font-weight:600}
+    ha-card {
+      display: block;
+      padding: 14px 18px 18px;
+      --c-low: #2e9e5b;
+      --c-mid: #e0a800;
+      --c-high: #d64545;
+      --c-acc: var(--primary-color, #03a9f4);
+    }
+    .head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .title {
+      font-size: 1.25em;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 0.95em;
+      font-weight: 700;
+      color: var(--secondary-text-color);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .chip {
+      padding: 5px 12px;
+      border-radius: 16px;
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.9em;
+      background: var(--c-mid);
+    }
+    .chip.billig { background: var(--c-low); }
+    .chip.dyr { background: var(--c-high); }
+
+    /* Flödesdiagram */
+    svg { width: 100%; height: auto; display: block; }
+    .flow .node { fill: var(--card-background-color, #fff); stroke: var(--divider-color, #ccc); stroke-width: 2.5; }
+    .flow .node.on { stroke: var(--c-acc); }
+    .flow .node.hub { stroke: var(--c-acc); stroke-width: 3; }
+    .ico { font-size: 26px; text-anchor: middle; }
+    .lbl { font-size: 14px; text-anchor: middle; fill: var(--primary-text-color); font-weight: 700; }
+    .sub { font-size: 13px; text-anchor: middle; fill: var(--secondary-text-color); font-weight: 600; }
+    .hub-load { font-size: 13px; text-anchor: middle; fill: var(--primary-text-color); font-weight: 800; }
+    .wire { fill: none; stroke: var(--divider-color, #ccc); stroke-width: 2.5; }
+    .wire.active { stroke: var(--c-acc); stroke-dasharray: 6 6; animation: flow linear infinite; }
+    .wire.active.solar { stroke: #f2b01e; }
+    .wire.active.battery { stroke: var(--c-low); }
+    .wire.active.grid { stroke: #4a90d9; }
+    .wire.active.ev { stroke: #9b59b6; }
+    .wire.active.boiler { stroke: #e67e22; }
+    .flow .node.on.solar { stroke: #f2b01e; }
+    .flow .node.on.battery { stroke: var(--c-low); }
+    .flow .node.on.grid { stroke: #4a90d9; }
+    @keyframes flow { to { stroke-dashoffset: -12; } }
+
+    /* Termostatsektion */
+    .thermo-wrap {
+      margin: 12px 0;
+      padding: 14px;
+      background: var(--secondary-background-color, rgba(0, 0, 0, 0.04));
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .thermo-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .thermo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.85em;
+      font-weight: 700;
+      background: var(--card-background-color, #fff);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    .thermo-badge.away {
+      background: #f39c12;
+      color: #fff;
+    }
+    .thermo-badge.heat {
+      color: #e67e22;
+      border: 1px solid #e67e22;
+    }
+    .thermo-badge.cool {
+      color: #3498db;
+      border: 1px solid #3498db;
+    }
+    .thermo-badge.idle {
+      color: var(--secondary-text-color);
+    }
+    .thermo-out {
+      font-size: 0.9em;
+      color: var(--secondary-text-color);
+    }
+
+    .thermo-main {
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .thermo-card {
+      flex: 1;
+      background: var(--card-background-color, #fff);
+      border-radius: 12px;
+      padding: 12px 8px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    }
+    .thermo-card .t-label {
+      font-size: 0.76em;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--secondary-text-color);
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .thermo-card .t-val {
+      font-size: 1.45em;
+      font-weight: 800;
+      color: var(--primary-text-color);
+    }
+    .thermo-card .t-sub {
+      font-size: 0.75em;
+      color: var(--secondary-text-color);
+      margin-top: 3px;
+    }
+
+    .thermo-dial {
+      flex: 1.35;
+      background: var(--card-background-color, #fff);
+      border: 2px solid var(--c-acc);
+      border-radius: 14px;
+      padding: 12px 8px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+    .thermo-dial.away {
+      border-color: #f39c12;
+    }
+    .thermo-dial .t-label {
+      font-size: 0.78em;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--c-acc);
+      font-weight: 700;
+    }
+    .thermo-dial.away .t-label {
+      color: #f39c12;
+    }
+    .thermo-stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin: 4px 0;
+    }
+    .thermo-stepper button {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      font-size: 1.3em;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      background: var(--secondary-background-color, #eee);
+      border: 1px solid var(--divider-color, #ccc);
+      color: var(--primary-text-color);
+      cursor: pointer;
+      user-select: none;
+    }
+    .thermo-stepper button:active {
+      transform: scale(0.92);
+    }
+    .thermo-stepper .t-val {
+      font-size: 1.85em;
+      font-weight: 800;
+      color: var(--primary-text-color);
+      min-width: 80px;
+    }
+
+    /* Knappar och lägen */
+    .modes {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .modes button {
+      flex: 1;
+      min-width: 75px;
+      border: 1px solid var(--divider-color, #ccc);
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 0.88em;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+    }
+    .modes button.sel {
+      background: var(--c-acc);
+      color: #fff;
+      border-color: var(--c-acc);
+      font-weight: 700;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .controls-row {
+      margin-top: 4px;
+    }
+    label.sw {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.9em;
+      cursor: pointer;
+      user-select: none;
+    }
+    label.sw input {
+      cursor: pointer;
+      accent-color: var(--c-acc);
+      width: 16px;
+      height: 16px;
+    }
+
+    .muted {
+      color: var(--secondary-text-color);
+      font-size: 0.85em;
+      line-height: 1.35;
+    }
+
+    /* Prisdiagram */
+    .bar { fill: var(--c-mid); }
+    .bar.billig { fill: var(--c-low); }
+    .bar.dyr { fill: var(--c-high); }
+    .bar.past { opacity: 0.35; }
+    .bar.cur { stroke: var(--primary-text-color); stroke-width: 1.5; }
+    .plan { fill: none; stroke: var(--c-acc); stroke-width: 2.5; stroke-linejoin: round; }
+    .now { stroke: var(--primary-text-color); stroke-dasharray: 3 3; opacity: 0.7; }
+    .ax { font-size: 9px; fill: var(--secondary-text-color); }
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.8em; color: var(--secondary-text-color); margin-top: 4px; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; background: var(--c-mid); }
+    .dot.billig { background: var(--c-low); }
+    .dot.dyr { background: var(--c-high); }
+    .line { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--c-acc); margin-right: 4px; vertical-align: middle; }
+
+    /* Bästa tid */
+    .srow { display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.9em; font-weight: 600; }
+    .strip { margin-bottom: 2px; }
+
+    /* Förbrukning & Effekt */
+    .cons { display: grid; grid-template-columns: 150px 1fr 150px; gap: 8px; align-items: center; margin: 4px 0; font-size: 0.9em; }
+    .cbar { height: 8px; border-radius: 4px; background: var(--divider-color, #e0e0e0); overflow: hidden; }
+    .cbar div { height: 100%; background: var(--c-acc); }
+    .cval { text-align: right; font-weight: 600; }
+    .pk { display: inline-block; margin: 0 6px 4px 0; padding: 4px 10px; border-radius: 12px; background: var(--secondary-background-color, #f1f3f4); font-weight: 700; }
+
+    @media (max-width: 480px) {
+      .thermo-main {
+        flex-direction: column;
+      }
+      .thermo-dial {
+        order: -1;
+      }
+      .cons {
+        grid-template-columns: 120px 1fr 110px;
+        font-size: 0.85em;
+      }
+    }
     `;
   }
 }
 
-customElements.define("smart-grid-flow-card", SmartGridFlowCard);
+if (!customElements.get("smart-grid-flow-card")) {
+  customElements.define("smart-grid-flow-card", SmartGridFlowCard);
+}
+
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "smart-grid-flow-card",
-  name: "Smart Grid Flow",
-  description: "Värmepump, varmvatten, elpriser, förbrukning och effektavgift",
-});
+if (!window.customCards.some((c) => c.type === "smart-grid-flow-card")) {
+  window.customCards.push({
+    type: "smart-grid-flow-card",
+    name: "Smart Grid Flow",
+    description: "Värmepump, termostat, bortaläge, varmvatten, elpriser och flödesdiagram",
+  });
+}

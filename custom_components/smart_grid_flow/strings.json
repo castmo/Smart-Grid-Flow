@@ -140,11 +140,23 @@
       },
       "boiler_control": {
         "name": "Control water heater"
+      },
+      "away_mode": {
+        "name": "Away mode"
+      },
+      "auto_season": {
+        "name": "Automatic season switching"
       }
     },
     "select": {
       "mode": {
-        "name": "Optimization mode"
+        "name": "Optimization mode",
+        "state": {
+          "price": "Lowest price",
+          "balanced": "Balanced",
+          "stable": "Stable temperature",
+          "away": "Away mode"
+        }
       }
     },
     "number": {
@@ -159,6 +171,9 @@
       },
       "setpoint_max": {
         "name": "Högsta börvärde"
+      },
+      "away_target": {
+        "name": "Away mode temperature"
       }
     }
   }

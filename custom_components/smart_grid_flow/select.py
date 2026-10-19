@@ -31,4 +31,9 @@ class SGFModeSelect(SGFBase, SelectEntity):
         return MODE_LABELS_SV.get(self.coordinator.runtime["mode"], MODE_LABELS_SV["balanced"])
 
     async def async_select_option(self, option: str) -> None:
-        await self.coordinator.async_set_runtime("mode", _BY_LABEL[option])
+        key = _BY_LABEL.get(option, "balanced")
+        await self.coordinator.async_set_runtime("mode", key)
+        if key == "away":
+            await self.coordinator.async_set_runtime("away_mode", True)
+        else:
+            await self.coordinator.async_set_runtime("away_mode", False)

@@ -81,6 +81,9 @@ DEFAULT_RUNTIME: dict[str, Any] = {
     "setpoint_max": 25.0,
     "hp_control": False,  # av tills användaren aktiverar styrning
     "boiler_control": False,
+    "away_mode": False,
+    "away_target": 12.0,
+    "auto_season": True,
 }
 
 HEAT_STATES = ("heat", "heat_cool", "auto")
@@ -116,6 +119,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_opt: datetime | None = None
         self._force_opt = True
         self._last_sp_change: datetime | None = None
+        self._last_mode_switch: datetime | None = None
         self._last_hot: datetime | None = None
         self._boiler_last: bool | None = None
 
@@ -308,7 +312,8 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         levels = price_levels(all_tot or today_tot)
         cur_total = tariff.total_price(cur_slot.spot) if cur_slot else None
 
-        # Optimering
+        # Säsongsväxling och optimering
+        await self._handle_auto_season(now, t_in, t_out, climate)
         await self._maybe_optimize(now, t_in, t_out, hvac, tariff)
         await self._apply_hp_control(now, hvac, climate)
         await self._apply_boiler(now, tariff)
@@ -343,7 +348,11 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "plan_savings": self.plan.savings if self.plan else None,
                 "control": self.runtime["hp_control"],
                 "mode": self.runtime["mode"],
-                "target": self.runtime["target"],
+                "target": float(self.runtime.get("away_target", 12.0)) if (self.runtime.get("mode") == "away" or self.runtime.get("away_mode")) else float(self.runtime["target"]),
+                "away": bool(self.runtime.get("mode") == "away" or self.runtime.get("away_mode")),
+                "away_target": float(self.runtime.get("away_target", 12.0)),
+                "auto_season": bool(self.runtime.get("auto_season", True)),
+                "is_cooling": hvac in ("cool",),
             },
             "boiler": self.boiler_info,
             "suitability": suit,
@@ -601,6 +610,21 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         thr = self.peak.threshold(dt_util.now())
         if thr <= 0:
             thr = 2.5
+        is_away = r.get("mode") == "away" or r.get("away_mode", False)
+        if is_away:
+            away_t = float(r.get("away_target", 12.0))
+            return Settings(
+                target=away_t,
+                comfort_min=max(away_t - 2.0, 8.0),
+                comfort_max=away_t + 3.0,
+                setpoint_min=10.0,
+                setpoint_max=16.0,
+                mode=Mode.AWAY,
+                effect_price_kr_kw=tariff.effect_price_kr_kw if has_meter else 0.0,
+                peak_threshold_kw=thr,
+                base_load_kw=base,
+                is_cooling=False,
+            )
         return Settings(
             target=float(r["target"]),
             comfort_min=min(float(r["comfort_min"]), float(r["target"])),
@@ -611,6 +635,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             effect_price_kr_kw=tariff.effect_price_kr_kw if has_meter else 0.0,
             peak_threshold_kw=thr,
             base_load_kw=base,
+            is_cooling=False,
         )
 
     async def _maybe_optimize(
@@ -642,23 +667,110 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_opt = now
         self._force_opt = False
 
-    async def _apply_hp_control(self, now: datetime, hvac: str | None, climate) -> None:
-        if not self.runtime["hp_control"] or self.plan is None or climate is None:
+    async def _handle_auto_season(
+        self, now: datetime, t_in: float | None, t_out: float | None, climate
+    ) -> None:
+        if climate is None or not self.cfg.get(CONF_CLIMATE):
             return
-        if hvac not in ("heat", "heat_cool", "auto"):
-            return  # respektera att användaren stängt av / kör kyla
-        cfg = self._opt_settings(self.tariff)
-        want = round_setpoint(self.plan.setpoint_now, cfg)
-        lo = climate.attributes.get("min_temp")
-        hi = climate.attributes.get("max_temp")
-        if lo is not None:
-            want = max(want, float(lo))
-        if hi is not None:
-            want = min(want, float(hi))
+        is_away = self.runtime.get("mode") == "away" or self.runtime.get("away_mode", False)
+        if is_away:
+            if climate.state != "heat":
+                _LOGGER.info("Bortaläge: tvingar värmepumpen till värmeläge")
+                await self.hass.services.async_call(
+                    "climate",
+                    "set_hvac_mode",
+                    {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "heat"},
+                    blocking=True,
+                )
+                self._last_mode_switch = now
+            return
+
+        if not self.runtime.get("auto_season", True):
+            return
+
+        if self._last_mode_switch and (now - self._last_mode_switch) < timedelta(hours=4):
+            return
+
+        cool_threshold = float(self.cfg.get(CONF_COOLING_OUTDOOR_THRESHOLD, 19.0))
+        heat_threshold = float(self.cfg.get(CONF_HEATING_OUTDOOR_THRESHOLD, 15.0))
+        target = float(self.runtime.get("target", 21.0))
+
+        if (
+            t_out is not None
+            and t_out >= cool_threshold
+            and t_in is not None
+            and (t_in >= target + 1.0 or t_in >= 23.5)
+        ):
+            if climate.state != "cool":
+                _LOGGER.info("Säsongsväxling: Byter till KYLA")
+                await self.hass.services.async_call(
+                    "climate",
+                    "set_hvac_mode",
+                    {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "cool"},
+                    blocking=True,
+                )
+                self._last_mode_switch = now
+        elif (
+            (t_out is not None and t_out <= heat_threshold)
+            or (t_in is not None and t_in <= target - 0.5)
+        ):
+            if climate.state != "heat":
+                _LOGGER.info("Säsongsväxling: Byter till VÄRME")
+                await self.hass.services.async_call(
+                    "climate",
+                    "set_hvac_mode",
+                    {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "heat"},
+                    blocking=True,
+                )
+                self._last_mode_switch = now
+
+    async def _apply_hp_control(self, now: datetime, hvac: str | None, climate) -> None:
+        if not self.runtime["hp_control"] or climate is None:
+            return
+        is_away = self.runtime.get("mode") == "away" or self.runtime.get("away_mode", False)
+        if is_away:
+            want = float(self.runtime.get("away_target", 12.0))
+            lo = climate.attributes.get("min_temp")
+            if lo is not None:
+                want = max(want, float(lo))
+            presets = climate.attributes.get("preset_modes") or []
+            if "away" in presets and climate.attributes.get("preset_mode") != "away":
+                try:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_preset_mode",
+                        {"entity_id": self.cfg[CONF_CLIMATE], "preset_mode": "away"},
+                        blocking=True,
+                    )
+                except Exception:
+                    pass
+        elif self.plan is not None and hvac in ("heat", "heat_cool", "auto"):
+            cfg = self._opt_settings(self.tariff)
+            want = round_setpoint(self.plan.setpoint_now, cfg)
+            lo = climate.attributes.get("min_temp")
+            hi = climate.attributes.get("max_temp")
+            if lo is not None:
+                want = max(want, float(lo))
+            if hi is not None:
+                want = min(want, float(hi))
+        elif hvac == "cool":
+            cur_slot = slot_at(self.prices, now)
+            price = self.tariff.total_price(cur_slot.spot) if cur_slot else 1.0
+            avg_p = mean([self.tariff.total_price(s.spot) for s in self.prices[:24]]) if self.prices else 1.0
+            target = float(self.runtime.get("target", 21.0))
+            want = target if price <= avg_p else min(target + 1.5, 24.5)
+            lo = climate.attributes.get("min_temp")
+            hi = climate.attributes.get("max_temp")
+            if lo is not None:
+                want = max(want, float(lo))
+            if hi is not None:
+                want = min(want, float(hi))
+        else:
+            return
+
         cur = climate.attributes.get("temperature")
         if cur is not None and abs(float(cur) - want) < 0.25:
             return
-        # Minsta stilleståndstid så att enheten inte pendlar.
         if (
             self._last_sp_change
             and (now - self._last_sp_change) < timedelta(minutes=30)
@@ -681,6 +793,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not sw:
             self.boiler_info = {}
             return
+        is_away = self.runtime.get("mode") == "away" or self.runtime.get("away_mode", False)
         slots = future_slots(self.prices, now)[:24]
         if len(slots) < 2:
             return
@@ -696,6 +809,9 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_hot = now
         days = (now - self._last_hot).total_seconds() / 86400 if self._last_hot else None
         on, reason, chosen = boiler_decision(now, steps, bs, temp, days)
+        if is_away and reason == "schema":
+            on = False
+            reason = "bortaläge"
         sw_state = self._state(sw)
         is_on = sw_state is not None and sw_state.state == "on"
         if self.runtime["boiler_control"] and sw_state is not None and on != is_on:
@@ -709,5 +825,5 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "reason": reason,
             "temp": temp,
             "control": self.runtime["boiler_control"],
-            "schedule": sorted(h.isoformat() for h in chosen),
+            "schedule": sorted(h.isoformat() for h in chosen) if not is_away else [],
         }

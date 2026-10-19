@@ -140,11 +140,23 @@
       },
       "boiler_control": {
         "name": "Styr varmvattenberedare"
+      },
+      "away_mode": {
+        "name": "Bortaläge"
+      },
+      "auto_season": {
+        "name": "Automatisk säsongsväxling"
       }
     },
     "select": {
       "mode": {
-        "name": "Optimeringsläge"
+        "name": "Optimeringsläge",
+        "state": {
+          "price": "Lägsta pris",
+          "balanced": "Balanserad",
+          "stable": "Stabil temperatur",
+          "away": "Bortaläge"
+        }
       }
     },
     "number": {
@@ -159,6 +171,9 @@
       },
       "setpoint_max": {
         "name": "Högsta börvärde"
+      },
+      "away_target": {
+        "name": "Bortaläge temperatur"
       }
     }
   }

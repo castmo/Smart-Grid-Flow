@@ -17,25 +17,78 @@ from .coordinator import SmartGridFlowCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Tillåt både UI-konfigurering och eventuell rad i configuration.yaml
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+async def _async_register_lovelace_card(hass: HomeAssistant) -> None:
+    """Registrerar Lovelace-kortet på alla sätt som Home Assistant stöder."""
+    card_dir = Path(__file__).parent / "frontend"
+    card_file = card_dir / "smart-grid-flow-card.js"
+    manifest_file = Path(__file__).parent / "manifest.json"
+
+    # 1. Statisk sökväg: /smart_grid_flow/smart-grid-flow-card.js
+    if not hass.data.get(f"{DOMAIN}_static_registered"):
+        try:
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(CARD_URL, str(card_file), False)]
+            )
+            hass.data[f"{DOMAIN}_static_registered"] = True
+        except Exception as err:
+            _LOGGER.debug("Statisk sökväg redan registrerad eller fel: %s", err)
+
+    # 2. Version från manifest för cache-busting
+    try:
+        manifest = json.loads(await hass.async_add_executor_job(manifest_file.read_text))
+        version = manifest.get("version", "0.1.2")
+    except Exception:
+        version = "0.1.2"
+    url_with_version = f"{CARD_URL}?v={version}"
+
+    # 3. Lägg till i Home Assistants frontend-moduler
+    frontend.add_extra_js_url(hass, url_with_version)
+
+    # 4. Lägg automatiskt till i Dashboard Resources (om Lovelace körs i lagringsläge)
+    if "lovelace" in hass.data:
+        ll = hass.data["lovelace"]
+        res = getattr(ll, "resources", None)
+        if res and hasattr(res, "async_items") and hasattr(res, "async_create_item"):
+            try:
+                if not getattr(res, "loaded", True):
+                    await res.async_load()
+                existing = [item.get("url", "").split("?")[0] for item in res.async_items()]
+                if CARD_URL not in existing and "/local/smart_grid_flow/smart-grid-flow-card.js" not in existing:
+                    await res.async_create_item({"res_type": "module", "url": url_with_version})
+                    _LOGGER.info("Smart Grid Flow: Registrerade Lovelace-resurs %s", url_with_version)
+            except Exception as err:
+                _LOGGER.debug("Kunde inte auto-registrera Lovelace-resurs: %s", err)
+
+    # 5. Kopiera till www/smart_grid_flow/ så /local/smart_grid_flow/ alltid fungerar som reserv
+    def _copy_to_www():
+        try:
+            www_dir = Path(hass.config.path("www", "smart_grid_flow"))
+            www_dir.mkdir(parents=True, exist_ok=True)
+            dest = www_dir / "smart-grid-flow-card.js"
+            if not dest.exists() or dest.read_bytes() != card_file.read_bytes():
+                dest.write_bytes(card_file.read_bytes())
+                _LOGGER.debug("Kopierade kort till %s", dest)
+        except Exception as err:
+            _LOGGER.debug("Kunde inte kopiera till www: %s", err)
+
+    await hass.async_add_executor_job(_copy_to_www)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Registrera Lovelace-kortet så fort integrationen laddas (även före konfigurering)."""
+    """Initiering vid uppstart av Home Assistant."""
     hass.data.setdefault(DOMAIN, {})
-    card = Path(__file__).parent / "frontend" / "smart-grid-flow-card.js"
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL, str(card), False)]
-    )
-    manifest = Path(__file__).parent / "manifest.json"
-    version = json.loads(await hass.async_add_executor_job(manifest.read_text))["version"]
-    frontend.add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+    await _async_register_lovelace_card(hass)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Initiering av en konfigurationsinstans."""
     hass.data.setdefault(DOMAIN, {})
+    await _async_register_lovelace_card(hass)
 
     coordinator = SmartGridFlowCoordinator(hass, entry)
     await coordinator.async_initialize()
