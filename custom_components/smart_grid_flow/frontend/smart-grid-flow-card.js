@@ -39,10 +39,24 @@ class SmartGridFlowCard extends HTMLElement {
   /* ---------- hjälpfunktioner ---------- */
   _find() {
     const h = this._hass;
-    if (this._config.entity) return h.states[this._config.entity];
-    const id = Object.keys(h.states).find(
+    if (!h || !h.states) return undefined;
+    if (this._config.entity && h.states[this._config.entity]) {
+      this._overviewId = this._config.entity;
+      return h.states[this._config.entity];
+    }
+    // 1. Sök på attributet sgf_overview
+    let id = Object.keys(h.states).find(
       (k) => k.startsWith("sensor.") && h.states[k].attributes && h.states[k].attributes.sgf_overview
     );
+    // 2. Fallback: sök på entitets-id som innehåller smart_grid_flow och oversikt/overview
+    if (!id) {
+      id = Object.keys(h.states).find(
+        (k) =>
+          k.startsWith("sensor.") &&
+          k.includes("smart_grid_flow") &&
+          (k.endsWith("_oversikt") || k.endsWith("_overview"))
+      );
+    }
     this._overviewId = id;
     return id ? h.states[id] : undefined;
   }
