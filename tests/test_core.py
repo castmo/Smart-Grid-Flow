@@ -168,4 +168,14 @@ def test_smooth_bounded_setpoints():
         assert p.setpoint <= 23.5, f"Börvärde {p.setpoint} för högt (bör inte rusa till 25-26°C)"
 
 
+def test_as_float_safety():
+    from custom_components.smart_grid_flow.coordinator import _as_float
+    assert _as_float(None, 2.5) == 2.5
+    assert _as_float("", 2.5) == 2.5
+    assert _as_float("invalid", 2.5) == 2.5
+    assert _as_float("3.7", 2.5) == 3.7
+    assert _as_float(4, 2.5) == 4.0
+
+
+
 

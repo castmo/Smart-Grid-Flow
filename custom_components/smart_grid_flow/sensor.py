@@ -37,7 +37,7 @@ class SGFSensorDescription(SensorEntityDescription):
 
 
 def _plan_kwh(d: dict[str, Any]) -> float | None:
-    plan = d["hp"]["plan"]
+    plan = d.get("hp", {}).get("plan")
     return round(plan[0]["kwh"], 2) if plan else None
 
 
@@ -45,26 +45,26 @@ SENSORS: tuple[SGFSensorDescription, ...] = (
     SGFSensorDescription(
         key="price_total", translation_key="price_total", native_unit_of_measurement="kr/kWh",
         state_class=SensorStateClass.MEASUREMENT, suggested_display_precision=2,
-        value_fn=lambda d: d["price"]["total"],
+        value_fn=lambda d: d.get("price", {}).get("total"),
     ),
     SGFSensorDescription(
         key="price_spot", translation_key="price_spot", native_unit_of_measurement="kr/kWh",
         state_class=SensorStateClass.MEASUREMENT, suggested_display_precision=2,
-        value_fn=lambda d: d["price"]["spot"],
+        value_fn=lambda d: d.get("price", {}).get("spot"),
     ),
     SGFSensorDescription(
         key="price_level", translation_key="price_level",
         device_class=SensorDeviceClass.ENUM, options=["billig", "normal", "dyr"],
-        value_fn=lambda d: d["price"]["level"],
+        value_fn=lambda d: d.get("price", {}).get("level"),
     ),
     SGFSensorDescription(
         key="price_avg_today", translation_key="price_avg_today", native_unit_of_measurement="kr/kWh",
-        suggested_display_precision=2, value_fn=lambda d: d["price"]["avg_today"],
+        suggested_display_precision=2, value_fn=lambda d: d.get("price", {}).get("avg_today"),
     ),
     SGFSensorDescription(
         key="hp_plan_setpoint", translation_key="hp_plan_setpoint",
         device_class=SensorDeviceClass.TEMPERATURE, native_unit_of_measurement="°C",
-        value_fn=lambda d: d["hp"]["plan_setpoint"],
+        value_fn=lambda d: d.get("hp", {}).get("plan_setpoint"),
     ),
     SGFSensorDescription(
         key="hp_plan_energy", translation_key="hp_plan_energy",
@@ -73,26 +73,26 @@ SENSORS: tuple[SGFSensorDescription, ...] = (
     ),
     SGFSensorDescription(
         key="hp_plan_savings", translation_key="hp_plan_savings", native_unit_of_measurement="kr",
-        suggested_display_precision=2, value_fn=lambda d: d["hp"]["plan_savings"],
+        suggested_display_precision=2, value_fn=lambda d: d.get("hp", {}).get("plan_savings"),
     ),
     SGFSensorDescription(
         key="peak_billed", translation_key="peak_billed",
         device_class=SensorDeviceClass.POWER, native_unit_of_measurement=UnitOfPower.KILO_WATT,
-        suggested_display_precision=2, value_fn=lambda d: d["peak"]["billed_kw"],
+        suggested_display_precision=2, value_fn=lambda d: d.get("peak", {}).get("billed_kw"),
     ),
     SGFSensorDescription(
         key="peak_cost", translation_key="peak_cost", native_unit_of_measurement="kr",
-        suggested_display_precision=0, value_fn=lambda d: d["peak"]["cost"],
+        suggested_display_precision=0, value_fn=lambda d: d.get("peak", {}).get("cost"),
     ),
     SGFSensorDescription(
         key="model_confidence", translation_key="model_confidence",
         native_unit_of_measurement=PERCENTAGE, suggested_display_precision=0,
-        value_fn=lambda d: round(d["model"]["confidence"] * 100),
+        value_fn=lambda d: round(d.get("model", {}).get("confidence", 0.0) * 100) if d.get("model", {}).get("confidence") is not None else None,
     ),
     SGFSensorDescription(
         key="model_time_constant", translation_key="model_time_constant",
         native_unit_of_measurement=UnitOfTime.HOURS, suggested_display_precision=1,
-        value_fn=lambda d: d["model"]["time_constant_h"],
+        value_fn=lambda d: d.get("model", {}).get("time_constant_h"),
     ),
 )
 
@@ -131,7 +131,10 @@ class SGFSensor(SGFBase, SensorEntity):
     def native_value(self):
         if not self.coordinator.data:
             return None
-        return self.entity_description.value_fn(self.coordinator.data)
+        try:
+            return self.entity_description.value_fn(self.coordinator.data)
+        except Exception:
+            return None
 
 
 class SGFConsumerSensor(SGFBase, SensorEntity):
@@ -181,7 +184,7 @@ class SGFOverviewSensor(SGFBase, SensorEntity):
     @property
     def native_value(self):
         d = self.coordinator.data
-        return d["price"]["level"] if d else None
+        return d.get("price", {}).get("level") if d else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

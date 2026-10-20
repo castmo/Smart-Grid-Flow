@@ -42,7 +42,10 @@ class SGFNumber(SGFBase, NumberEntity):
 
     @property
     def native_value(self) -> float:
-        return float(self.coordinator.runtime[self._key])
+        val = self.coordinator.runtime.get(self._key)
+        if val is None:
+            val = self._attr_native_min_value
+        return float(val)
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_runtime(self._key, float(value))

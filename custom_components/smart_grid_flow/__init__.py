@@ -95,14 +95,20 @@ async def _async_register_lovelace_card(hass: HomeAssistant) -> None:
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Initiering vid uppstart av Home Assistant."""
     hass.data.setdefault(DOMAIN, {})
-    await _async_register_lovelace_card(hass)
+    try:
+        await _async_register_lovelace_card(hass)
+    except Exception as err:
+        _LOGGER.warning("Kunde inte registrera Lovelace-kort: %s", err)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initiering av en konfigurationsinstans."""
     hass.data.setdefault(DOMAIN, {})
-    await _async_register_lovelace_card(hass)
+    try:
+        await _async_register_lovelace_card(hass)
+    except Exception as err:
+        _LOGGER.warning("Kunde inte registrera Lovelace-kort: %s", err)
 
     coordinator = SmartGridFlowCoordinator(hass, entry)
     await coordinator.async_initialize()

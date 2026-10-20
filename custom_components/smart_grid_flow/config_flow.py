@@ -50,25 +50,28 @@ from .core.tariff import TariffConfig
 
 def _discover_wfrac(hass) -> dict[str, str]:
     """Hitta WF-RAC-entiteter i entitetsregistret (båda kända integrationerna)."""
-    reg = er.async_get(hass)
-    found: dict[str, str] = {}
-    for e in reg.entities.values():
-        if e.platform not in WFRAC_PLATFORMS or e.disabled:
-            continue
-        uid = (e.unique_id or "").lower()
-        tk = (e.translation_key or "").lower()
-        if e.domain == "climate" and CONF_CLIMATE not in found:
-            found[CONF_CLIMATE] = e.entity_id
-        elif e.domain == "sensor":
-            if tk == "indoor" or "inside_temperature" in uid:
-                found.setdefault(CONF_INDOOR_TEMP, e.entity_id)
-            elif tk == "outdoor" or "outside_temperature" in uid:
-                found.setdefault(CONF_OUTDOOR_TEMP, e.entity_id)
-            elif tk == "energy_usage_total":
-                found[CONF_HP_ENERGY] = e.entity_id  # föredra livstidstotalen
-            elif tk == "energy_usage" or "energy" in uid:
-                found.setdefault(CONF_HP_ENERGY, e.entity_id)
-    return found
+    try:
+        reg = er.async_get(hass)
+        found: dict[str, str] = {}
+        for e in reg.entities.values():
+            if e.platform not in WFRAC_PLATFORMS or e.disabled:
+                continue
+            uid = (e.unique_id or "").lower()
+            tk = (e.translation_key or "").lower()
+            if e.domain == "climate" and CONF_CLIMATE not in found:
+                found[CONF_CLIMATE] = e.entity_id
+            elif e.domain == "sensor":
+                if tk == "indoor" or "inside_temperature" in uid:
+                    found.setdefault(CONF_INDOOR_TEMP, e.entity_id)
+                elif tk == "outdoor" or "outside_temperature" in uid:
+                    found.setdefault(CONF_OUTDOOR_TEMP, e.entity_id)
+                elif tk == "energy_usage_total":
+                    found[CONF_HP_ENERGY] = e.entity_id  # föredra livstidstotalen
+                elif tk == "energy_usage" or "energy" in uid:
+                    found.setdefault(CONF_HP_ENERGY, e.entity_id)
+        return found
+    except Exception:
+        return {}
 
 
 def _ent(domain: str | list[str], device_class: str | None = None, multiple: bool = False):

@@ -91,6 +91,16 @@ DEFAULT_RUNTIME: dict[str, Any] = {
 HEAT_STATES = ("heat", "heat_cool", "auto")
 
 
+def _as_float(val: Any, default: float) -> float:
+    """Säker konvertering till float utan krascher."""
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Hjärtat i integrationen."""
 
@@ -137,25 +147,28 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         c = self.cfg
         d = TariffConfig()
         return TariffConfig(
-            vat=float(c.get(CONF_VAT, d.vat)),
-            supplier_markup_ore=float(c.get(CONF_MARKUP, d.supplier_markup_ore)),
-            grid_transfer_ore=float(c.get(CONF_TRANSFER, d.grid_transfer_ore)),
-            energy_tax_ore=float(c.get(CONF_TAX, d.energy_tax_ore)),
-            effect_price_kr_kw=float(c.get(CONF_EFFECT_PRICE, d.effect_price_kr_kw)),
-            fixed_fee_kr_month=float(c.get(CONF_FIXED_FEE, d.fixed_fee_kr_month)),
+            vat=_as_float(c.get(CONF_VAT), d.vat),
+            supplier_markup_ore=_as_float(c.get(CONF_MARKUP), d.supplier_markup_ore),
+            grid_transfer_ore=_as_float(c.get(CONF_TRANSFER), d.grid_transfer_ore),
+            energy_tax_ore=_as_float(c.get(CONF_TAX), d.energy_tax_ore),
+            effect_price_kr_kw=_as_float(c.get(CONF_EFFECT_PRICE), d.effect_price_kr_kw),
+            fixed_fee_kr_month=_as_float(c.get(CONF_FIXED_FEE), d.fixed_fee_kr_month),
         )
 
     # ----------------------------------------------------------------- storage
     async def async_initialize(self) -> None:
-        data = await self.store.async_load() or {}
-        self.runtime.update(data.get("runtime", {}))
-        self.model.load(data.get("model", {}))
-        self.model.energy.max_kwh = float(self.cfg.get(CONF_HP_MAX_KW, 2.5))
-        self.peak.load(data.get("peak", {}))
-        self.consumers = data.get("consumers", {})
-        self._base_hist = data.get("base_hist", [])
-        if data.get("last_hot"):
-            self._last_hot = dt_util.parse_datetime(data["last_hot"])
+        try:
+            data = await self.store.async_load() or {}
+            self.runtime.update(data.get("runtime", {}))
+            self.model.load(data.get("model", {}))
+            self.model.energy.max_kwh = _as_float(self.cfg.get(CONF_HP_MAX_KW), 2.5)
+            self.peak.load(data.get("peak", {}))
+            self.consumers = data.get("consumers", {})
+            self._base_hist = data.get("base_hist", [])
+            if data.get("last_hot"):
+                self._last_hot = dt_util.parse_datetime(data["last_hot"])
+        except Exception as err:
+            _LOGGER.warning("Kunde inte läsa in sparade data: %s", err)
 
     def _save_payload(self) -> dict[str, Any]:
         return {
@@ -325,7 +338,12 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         flow = self._flow()
         suit = self._suitability(now, tariff, t_out)
-        fixed_hp_kw = self.consumers.get("heatpump", {}).get("power_kw", 0.0)
+        fixed_hp_kw = float(self.consumers.get("heatpump", {}).get("power_kw") or 0.0)
+        target_val = (
+            _as_float(self.runtime.get("away_target"), 12.0)
+            if (self.runtime.get("mode") == "away" or self.runtime.get("away_mode"))
+            else _as_float(self.runtime.get("target"), 21.0)
+        )
         data = {
             "now": now.isoformat(),
             "price": {
@@ -351,11 +369,11 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "plan": self._plan_attr(),
                 "plan_cost": self.plan.cost if self.plan else None,
                 "plan_savings": self.plan.savings if self.plan else None,
-                "control": self.runtime["hp_control"],
-                "mode": self.runtime["mode"],
-                "target": float(self.runtime.get("away_target", 12.0)) if (self.runtime.get("mode") == "away" or self.runtime.get("away_mode")) else float(self.runtime["target"]),
+                "control": bool(self.runtime.get("hp_control", False)),
+                "mode": self.runtime.get("mode", Mode.BALANCED.value),
+                "target": target_val,
                 "away": bool(self.runtime.get("mode") == "away" or self.runtime.get("away_mode")),
-                "away_target": float(self.runtime.get("away_target", 12.0)),
+                "away_target": _as_float(self.runtime.get("away_target"), 12.0),
                 "auto_season": bool(self.runtime.get("auto_season", True)),
                 "is_cooling": hvac in ("cool",),
             },
@@ -403,19 +421,18 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         grid = self._power_kw(c.get(CONF_GRID_METER), bool(c.get(CONF_GRID_INVERT)))
         solar = self._power_kw(c.get(CONF_SOLAR_POWER))
         batt = self._power_kw(c.get(CONF_BATTERY_POWER), bool(c.get(CONF_BATTERY_INVERT)))
-        if batt is not None and not c.get(CONF_BATTERY_INVERT):
-            pass  # + = laddning är standard
         soc = self._num(c.get(CONF_BATTERY_SOC))
         ev = self._power_kw(c.get(CONF_EV_POWER))
-        hp = self.consumers.get("heatpump", {}).get("power_kw", 0.0)
-        boiler = self.consumers.get("boiler", {}).get("power_kw", 0.0)
-        solar_v = max(solar or 0.0, 0.0)
-        batt_v = batt or 0.0
-        known = hp + boiler + (ev or 0.0)
+        hp = float(self.consumers.get("heatpump", {}).get("power_kw") or 0.0)
+        boiler = float(self.consumers.get("boiler", {}).get("power_kw") or 0.0)
+        solar_v = max(float(solar or 0.0), 0.0)
+        batt_v = float(batt or 0.0)
+        ev_v = float(ev or 0.0)
+        known = hp + boiler + ev_v
         if grid is not None:
-            load = grid + solar_v - batt_v
+            load = max(grid + solar_v - batt_v, 0.0)
         else:
-            load = known
+            load = max(known, 0.0)
             grid = load + batt_v - solar_v
         other = max(load - known, 0.0)
         return {
@@ -423,7 +440,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "solar": None if solar is None else round(solar_v, 3),
             "battery": None if batt is None else round(batt_v, 3),
             "soc": soc,
-            "ev": None if ev is None else round(ev, 3),
+            "ev": None if ev is None else round(ev_v, 3),
             "heatpump": round(hp, 3),
             "boiler": round(boiler, 3),
             "other": round(other, 3),
@@ -435,32 +452,36 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Lämplighetsdiagram för elbilsladdning och dusch (hela dygnet inkl. imorgon)."""
         if len(self.prices) < 2:
             return {}
-        c = self.cfg
-        fb = t_out if t_out is not None else 5.0
-        steps = [
-            Step(s.start, tariff.total_price(s.spot), self._t_out_at(s.start, fb))
-            for s in self.prices
-        ]
-        ev_kw = float(c.get(CONF_EV_KW, 7.4))
-        delay = int(c.get(CONF_SHOWER_DELAY, 1))
-        other = {p.start: p.energy_kwh for p in (self.plan.steps if self.plan else [])}
-        opt = self._opt_settings(tariff)
-        sched = None
-        if self.runtime["boiler_control"] and self.boiler_info.get("schedule"):
-            sched = {dt_util.parse_datetime(x) for x in self.boiler_info["schedule"]}
-        ev = ev_suitability(
-            steps, ev_kw, other, opt.base_load_kw, opt.peak_threshold_kw, opt.effect_price_kr_kw
-        )
-        shower = shower_suitability(steps, sched, delay)
-        return {
-            "ev": ev,
-            "shower": shower,
-            "ev_kw": ev_kw,
-            "shower_delay_h": delay,
-            "shower_scheduled": sched is not None,
-            "best_ev_3h": best_window(ev, 3, now),
-            "best_shower": best_window(shower, 1, now),
-        }
+        try:
+            c = self.cfg
+            fb = t_out if t_out is not None else 5.0
+            steps = [
+                Step(s.start, tariff.total_price(s.spot), self._t_out_at(s.start, fb))
+                for s in self.prices
+            ]
+            ev_kw = _as_float(c.get(CONF_EV_KW), 7.4)
+            delay = int(_as_float(c.get(CONF_SHOWER_DELAY), 1))
+            other = {p.start: p.energy_kwh for p in (self.plan.steps if self.plan else [])}
+            opt = self._opt_settings(tariff)
+            sched = None
+            if self.runtime.get("boiler_control") and self.boiler_info.get("schedule"):
+                sched = {dt_util.parse_datetime(x) for x in self.boiler_info["schedule"] if x}
+            ev = ev_suitability(
+                steps, ev_kw, other, opt.base_load_kw, opt.peak_threshold_kw, opt.effect_price_kr_kw
+            )
+            shower = shower_suitability(steps, sched, delay)
+            return {
+                "ev": ev,
+                "shower": shower,
+                "ev_kw": ev_kw,
+                "shower_delay_h": delay,
+                "shower_scheduled": sched is not None,
+                "best_ev_3h": best_window(ev, 3, now),
+                "best_shower": best_window(shower, 1, now),
+            }
+        except Exception as err:
+            _LOGGER.warning("Kunde inte beräkna lämplighet: %s", err)
+            return {}
 
     def _plan_attr(self) -> list[dict[str, Any]]:
         if not self.plan:
@@ -628,7 +649,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         is_away = r.get("mode") == "away" or r.get("away_mode", False)
         if is_away:
-            away_t = float(r.get("away_target", 12.0))
+            away_t = _as_float(r.get("away_target"), 12.0)
             return Settings(
                 target=away_t,
                 comfort_min=max(away_t - 2.0, 8.0),
@@ -642,13 +663,22 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 is_cooling=False,
                 current_setpoint=cur_sp,
             )
+        mode_val = r.get("mode", Mode.BALANCED.value)
+        try:
+            mode_enum = Mode(mode_val)
+        except ValueError:
+            mode_enum = Mode.BALANCED
+        target = _as_float(r.get("target"), 21.0)
+        c_min = _as_float(r.get("comfort_min"), 19.5)
+        sp_min = _as_float(r.get("setpoint_min"), 18.0)
+        sp_max = _as_float(r.get("setpoint_max"), 25.0)
         return Settings(
-            target=float(r["target"]),
-            comfort_min=min(float(r["comfort_min"]), float(r["target"])),
-            comfort_max=max(float(r["target"]) + 2.0, 23.0),
-            setpoint_min=float(r["setpoint_min"]),
-            setpoint_max=float(r["setpoint_max"]),
-            mode=Mode(r["mode"]),
+            target=target,
+            comfort_min=min(c_min, target),
+            comfort_max=max(target + 2.0, 23.0),
+            setpoint_min=sp_min,
+            setpoint_max=sp_max,
+            mode=mode_enum,
             effect_price_kr_kw=tariff.effect_price_kr_kw if has_meter else 0.0,
             peak_threshold_kw=thr,
             base_load_kw=base,
@@ -690,17 +720,23 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         if climate is None or not self.cfg.get(CONF_CLIMATE):
             return
+        if not self.runtime.get("hp_control"):
+            return
+
         is_away = self.runtime.get("mode") == "away" or self.runtime.get("away_mode", False)
         if is_away:
             if climate.state != "heat":
                 _LOGGER.info("Bortaläge: tvingar värmepumpen till värmeläge")
-                await self.hass.services.async_call(
-                    "climate",
-                    "set_hvac_mode",
-                    {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "heat"},
-                    blocking=True,
-                )
-                self._last_mode_switch = now
+                try:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_hvac_mode",
+                        {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "heat"},
+                        blocking=True,
+                    )
+                    self._last_mode_switch = now
+                except Exception as err:
+                    _LOGGER.warning("Kunde inte byta hvac_mode till värme i bortaläge: %s", err)
             return
 
         if not self.runtime.get("auto_season", True):
@@ -709,9 +745,9 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._last_mode_switch and (now - self._last_mode_switch) < timedelta(hours=4):
             return
 
-        cool_threshold = float(self.cfg.get(CONF_COOLING_OUTDOOR_THRESHOLD, 19.0))
-        heat_threshold = float(self.cfg.get(CONF_HEATING_OUTDOOR_THRESHOLD, 15.0))
-        target = float(self.runtime.get("target", 21.0))
+        cool_threshold = _as_float(self.cfg.get(CONF_COOLING_OUTDOOR_THRESHOLD), 19.0)
+        heat_threshold = _as_float(self.cfg.get(CONF_HEATING_OUTDOOR_THRESHOLD), 15.0)
+        target = _as_float(self.runtime.get("target"), 21.0)
 
         if (
             t_out is not None
@@ -721,33 +757,40 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             if climate.state != "cool":
                 _LOGGER.info("Säsongsväxling: Byter till KYLA")
-                await self.hass.services.async_call(
-                    "climate",
-                    "set_hvac_mode",
-                    {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "cool"},
-                    blocking=True,
-                )
-                self._last_mode_switch = now
+                try:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_hvac_mode",
+                        {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "cool"},
+                        blocking=True,
+                    )
+                    self._last_mode_switch = now
+                except Exception as err:
+                    _LOGGER.warning("Kunde inte byta hvac_mode till kyla: %s", err)
         elif (
             (t_out is not None and t_out <= heat_threshold)
             or (t_in is not None and t_in <= target - 0.5)
         ):
             if climate.state != "heat":
                 _LOGGER.info("Säsongsväxling: Byter till VÄRME")
-                await self.hass.services.async_call(
-                    "climate",
-                    "set_hvac_mode",
-                    {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "heat"},
-                    blocking=True,
-                )
-                self._last_mode_switch = now
+                try:
+                    await self.hass.services.async_call(
+                        "climate",
+                        "set_hvac_mode",
+                        {"entity_id": self.cfg[CONF_CLIMATE], "hvac_mode": "heat"},
+                        blocking=True,
+                    )
+                    self._last_mode_switch = now
+                except Exception as err:
+                    _LOGGER.warning("Kunde inte byta hvac_mode till värme: %s", err)
 
     async def _apply_hp_control(self, now: datetime, hvac: str | None, climate) -> None:
-        if not self.runtime["hp_control"] or climate is None:
+        if not self.runtime.get("hp_control") or climate is None:
             return
+        cfg = self._opt_settings(self.tariff)
         is_away = self.runtime.get("mode") == "away" or self.runtime.get("away_mode", False)
         if is_away:
-            want = float(self.runtime.get("away_target", 12.0))
+            want = _as_float(self.runtime.get("away_target"), 12.0)
             lo = climate.attributes.get("min_temp")
             if lo is not None:
                 want = max(want, float(lo))
@@ -763,7 +806,6 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception:
                     pass
         elif self.plan is not None and hvac in ("heat", "heat_cool", "auto"):
-            cfg = self._opt_settings(self.tariff)
             want = round_setpoint(self.plan.setpoint_now, cfg)
             lo = climate.attributes.get("min_temp")
             hi = climate.attributes.get("max_temp")
@@ -775,7 +817,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             cur_slot = slot_at(self.prices, now)
             price = self.tariff.total_price(cur_slot.spot) if cur_slot else 1.0
             avg_p = mean([self.tariff.total_price(s.spot) for s in self.prices[:24]]) if self.prices else 1.0
-            target = float(self.runtime.get("target", 21.0))
+            target = _as_float(self.runtime.get("target"), 21.0)
             want = target if price <= avg_p else min(target + 1.5, 24.5)
             lo = climate.attributes.get("min_temp")
             hi = climate.attributes.get("max_temp")
@@ -820,21 +862,24 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._last_sp_change and (now - self._last_sp_change) < timedelta(minutes=45):
                 return
 
-        await self.hass.services.async_call(
-            "climate",
-            "set_temperature",
-            {"entity_id": self.cfg[CONF_CLIMATE], "temperature": want},
-            blocking=True,
-        )
-        self._last_sp_change = now
-        self._last_applied_hour = current_hour
-        self._last_applied_sp = want
-        _LOGGER.info(
-            "Smart Grid Flow satte värmepumpens börvärde till %.1f°C (tidigare: %s, läge: %s)",
-            want,
-            f"{cur_val:.1f}°C" if cur_val is not None else "okänt",
-            cfg.mode.value if hasattr(cfg.mode, "value") else str(cfg.mode),
-        )
+        try:
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {"entity_id": self.cfg[CONF_CLIMATE], "temperature": want},
+                blocking=True,
+            )
+            self._last_sp_change = now
+            self._last_applied_hour = current_hour
+            self._last_applied_sp = want
+            _LOGGER.info(
+                "Smart Grid Flow satte värmepumpens börvärde till %.1f°C (tidigare: %s, läge: %s)",
+                want,
+                f"{cur_val:.1f}°C" if cur_val is not None else "okänt",
+                cfg.mode.value if hasattr(cfg.mode, "value") else str(cfg.mode),
+            )
+        except Exception as err:
+            _LOGGER.warning("Kunde inte sätta värmepumpens temperatur: %s", err)
 
     async def _apply_boiler(self, now: datetime, tariff: TariffConfig) -> None:
         c = self.cfg
@@ -850,9 +895,9 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         steps = [Step(s.start, tariff.total_price(s.spot), fb) for s in slots]
         temp = self._num(c.get(CONF_BOILER_TEMP))
         bs = BoilerSettings(
-            run_hours_per_day=int(c.get(CONF_BOILER_HOURS, 3)),
-            min_temp=float(c.get(CONF_BOILER_MIN_TEMP, 45)),
-            max_temp=float(c.get(CONF_BOILER_MAX_TEMP, 75)),
+            run_hours_per_day=int(_as_float(c.get(CONF_BOILER_HOURS), 3)),
+            min_temp=_as_float(c.get(CONF_BOILER_MIN_TEMP), 45),
+            max_temp=_as_float(c.get(CONF_BOILER_MAX_TEMP), 75),
         )
         if temp is not None and temp >= bs.legionella_temp:
             self._last_hot = now
@@ -863,16 +908,19 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reason = "bortaläge"
         sw_state = self._state(sw)
         is_on = sw_state is not None and sw_state.state == "on"
-        if self.runtime["boiler_control"] and sw_state is not None and on != is_on:
-            await self.hass.services.async_call(
-                "homeassistant", "turn_on" if on else "turn_off",
-                {"entity_id": sw}, blocking=True,
-            )
+        if self.runtime.get("boiler_control") and sw_state is not None and on != is_on:
+            try:
+                await self.hass.services.async_call(
+                    "homeassistant", "turn_on" if on else "turn_off",
+                    {"entity_id": sw}, blocking=True,
+                )
+            except Exception as err:
+                _LOGGER.warning("Kunde inte styra varmvattenberedarens brytare: %s", err)
         self.boiler_info = {
             "on": is_on,
             "wanted_on": on,
             "reason": reason,
             "temp": temp,
-            "control": self.runtime["boiler_control"],
+            "control": bool(self.runtime.get("boiler_control")),
             "schedule": sorted(h.isoformat() for h in chosen) if not is_away else [],
         }
