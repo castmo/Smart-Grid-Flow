@@ -104,6 +104,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initiering av en konfigurationsinstans."""
+    _LOGGER.info("Startar Smart Grid Flow för entry %s", entry.entry_id)
     hass.data.setdefault(DOMAIN, {})
     try:
         await _async_register_lovelace_card(hass)
@@ -117,6 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_reload_on_options))
+    _LOGGER.info("Smart Grid Flow startades framgångsrikt för entry %s", entry.entry_id)
     return True
 
 

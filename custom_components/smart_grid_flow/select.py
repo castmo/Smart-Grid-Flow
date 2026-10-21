@@ -28,7 +28,7 @@ class SGFModeSelect(SGFBase, SelectEntity):
 
     @property
     def current_option(self) -> str:
-        return MODE_LABELS_SV.get(self.coordinator.runtime["mode"], MODE_LABELS_SV["balanced"])
+        return MODE_LABELS_SV.get(self.coordinator.runtime.get("mode", "balanced"), MODE_LABELS_SV["balanced"])
 
     async def async_select_option(self, option: str) -> None:
         key = _BY_LABEL.get(option, "balanced")

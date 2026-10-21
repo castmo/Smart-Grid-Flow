@@ -93,7 +93,7 @@ HEAT_STATES = ("heat", "heat_cool", "auto")
 
 def _as_float(val: Any, default: float) -> float:
     """Säker konvertering till float utan krascher."""
-    if val is None or val == "":
+    if val is None or val == "" or val in (STATE_UNAVAILABLE, STATE_UNKNOWN):
         return default
     try:
         return float(val)
@@ -101,16 +101,35 @@ def _as_float(val: Any, default: float) -> float:
         return default
 
 
+def _as_float_or_none(val: Any) -> float | None:
+    """Säker konvertering till float eller None."""
+    if val is None or val == "" or val in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Hjärtat i integrationen."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
-        )
+        try:
+            super().__init__(
+                hass,
+                _LOGGER,
+                config_entry=entry,
+                name=DOMAIN,
+                update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+            )
+        except TypeError:
+            super().__init__(
+                hass,
+                _LOGGER,
+                name=DOMAIN,
+                update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+            )
         self.entry = entry
         self.store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self.runtime: dict[str, Any] = dict(DEFAULT_RUNTIME)
@@ -225,34 +244,37 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ----------------------------------------------------------------- prices
     async def _refresh_prices(self, now: datetime) -> None:
-        today0 = dt_util.start_of_local_day(now)
-        tomorrow_known = any(
-            s.start >= today0 + timedelta(days=1) for s in self.prices
-        )
-        today_known = any(today0 <= s.start < today0 + timedelta(days=1) for s in self.prices)
-        due = self._last_price_try is None or (now - self._last_price_try) > timedelta(minutes=30)
-        need = (not today_known) or (not tomorrow_known and now.hour >= 13)
-        if not (need and due):
-            return
-        self._last_price_try = now
-        area = self.cfg.get(CONF_AREA, DEFAULT_AREA)
-        session = async_get_clientsession(self.hass)
-        days = [today0, today0 + timedelta(days=1)]
-        fresh: list[PriceSlot] = []
-        for day in days:
-            try:
-                async with session.get(api_url(day, area), timeout=15) as resp:
-                    if resp.status == 200:
-                        fresh += parse_elprisetjustnu(await resp.json())
-                    elif resp.status != 404:  # 404 = morgondagens priser ej publicerade
-                        _LOGGER.warning("Elpris-API svarade %s för %s", resp.status, day.date())
-            except Exception as err:  # noqa: BLE001 - nätverksfel ska aldrig stoppa styrningen
-                _LOGGER.warning("Kunde inte hämta elpriser: %s", err)
-        if fresh:
-            self.prices = [
-                s for s in merge_slots(self.prices, fresh) if s.start >= today0
-            ]
-            self._force_opt = True
+        try:
+            today0 = dt_util.start_of_local_day(now)
+            tomorrow_known = any(
+                s.start >= today0 + timedelta(days=1) for s in self.prices
+            )
+            today_known = any(today0 <= s.start < today0 + timedelta(days=1) for s in self.prices)
+            due = self._last_price_try is None or (now - self._last_price_try) > timedelta(minutes=30)
+            need = (not today_known) or (not tomorrow_known and now.hour >= 13)
+            if not (need and due):
+                return
+            self._last_price_try = now
+            area = self.cfg.get(CONF_AREA, DEFAULT_AREA)
+            session = async_get_clientsession(self.hass)
+            days = [today0, today0 + timedelta(days=1)]
+            fresh: list[PriceSlot] = []
+            for day in days:
+                try:
+                    async with session.get(api_url(day, area), timeout=15) as resp:
+                        if resp.status == 200:
+                            fresh += parse_elprisetjustnu(await resp.json())
+                        elif resp.status != 404:  # 404 = morgondagens priser ej publicerade
+                            _LOGGER.warning("Elpris-API svarade %s för %s", resp.status, day.date())
+                except Exception as err:  # noqa: BLE001 - nätverksfel ska aldrig stoppa styrningen
+                    _LOGGER.warning("Kunde inte hämta elpriser: %s", err)
+            if fresh:
+                self.prices = [
+                    s for s in merge_slots(self.prices, fresh) if s.start >= today0
+                ]
+                self._force_opt = True
+        except Exception as err:
+            _LOGGER.warning("Fel vid uppdatering av elpriser: %s", err)
 
     # --------------------------------------------------------------- forecast
     async def _refresh_forecast(self, now: datetime) -> None:
@@ -273,10 +295,10 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             items = (resp or {}).get(entity, {}).get("forecast", [])
             fc = []
             for it in items:
-                t = it.get("temperature")
+                t = _as_float_or_none(it.get("temperature"))
                 when = dt_util.parse_datetime(str(it.get("datetime")))
                 if t is not None and when is not None:
-                    fc.append((when, float(t)))
+                    fc.append((when, t))
             if fc:
                 self.forecast = fc
         except Exception as err:  # noqa: BLE001
@@ -300,18 +322,18 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._refresh_forecast(now)
 
         climate = self._state(cfg.get(CONF_CLIMATE))
-        t_in = self._num(cfg.get(CONF_INDOOR_TEMP))
-        if t_in is None and climate is not None:
-            t_in = climate.attributes.get("current_temperature")
-        t_out = self._num(cfg.get(CONF_OUTDOOR_TEMP))
-        if t_out is None:
+        t_in_raw = self._num(cfg.get(CONF_INDOOR_TEMP))
+        if t_in_raw is None and climate is not None:
+            t_in_raw = climate.attributes.get("current_temperature")
+        t_out_raw = self._num(cfg.get(CONF_OUTDOOR_TEMP))
+        if t_out_raw is None:
             w = self._state(cfg.get(CONF_WEATHER))
             if w is not None:
-                t_out = w.attributes.get("temperature")
-        t_in = float(t_in) if t_in is not None else None
-        t_out = float(t_out) if t_out is not None else None
+                t_out_raw = w.attributes.get("temperature")
+        t_in = _as_float_or_none(t_in_raw)
+        t_out = _as_float_or_none(t_out_raw)
         hvac = climate.state if climate is not None else None
-        hp_set = climate.attributes.get("temperature") if climate is not None else None
+        hp_set = _as_float_or_none(climate.attributes.get("temperature")) if climate is not None else None
         hp_counter = self._energy_kwh(cfg.get(CONF_HP_ENERGY))
 
         self._track_hp_hour(now, t_in, t_out, hp_set if hvac in HEAT_STATES else None, hp_counter)
@@ -406,7 +428,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         try:
             v = float(st.state)
-        except ValueError:
+        except (TypeError, ValueError):
             return None
         unit = st.attributes.get("unit_of_measurement")
         if unit == "W":
@@ -532,7 +554,9 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if t_out is not None:
             a["t_out"].append(t_out)
         if setpoint is not None:
-            a["sp"].append(float(setpoint))
+            sp_f = _as_float_or_none(setpoint)
+            if sp_f is not None:
+                a["sp"].append(sp_f)
 
     def _close_hour(self, a: dict[str, Any], t_in_end: float | None, counter: float | None) -> None:
         if not a["full"] or a["counter0"] is None or counter is None:
@@ -553,7 +577,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         try:
             v = float(st.state)
-        except ValueError:
+        except (TypeError, ValueError):
             return
         unit = st.attributes.get("unit_of_measurement", "")
         if unit in ("W", "kW"):
@@ -586,7 +610,10 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             out.append(("heatpump", "Värmepump", c[CONF_HP_ENERGY]))
         if c.get(CONF_BOILER_ENERGY):
             out.append(("boiler", "Varmvattenberedare", c[CONF_BOILER_ENERGY]))
-        for i, eid in enumerate(c.get(CONF_EXTRA_CONSUMERS) or []):
+        extra = c.get(CONF_EXTRA_CONSUMERS) or []
+        if isinstance(extra, str):
+            extra = [extra]
+        for i, eid in enumerate(extra):
             st = self.hass.states.get(eid)
             name = st.attributes.get("friendly_name", eid) if st else eid
             out.append((f"extra_{i}", name, eid))
@@ -793,7 +820,7 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             want = _as_float(self.runtime.get("away_target"), 12.0)
             lo = climate.attributes.get("min_temp")
             if lo is not None:
-                want = max(want, float(lo))
+                want = max(want, _as_float(lo, want))
             presets = climate.attributes.get("preset_modes") or []
             if "away" in presets and climate.attributes.get("preset_mode") != "away":
                 try:
@@ -810,9 +837,9 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             lo = climate.attributes.get("min_temp")
             hi = climate.attributes.get("max_temp")
             if lo is not None:
-                want = max(want, float(lo))
+                want = max(want, _as_float(lo, want))
             if hi is not None:
-                want = min(want, float(hi))
+                want = min(want, _as_float(hi, want))
         elif hvac == "cool":
             cur_slot = slot_at(self.prices, now)
             price = self.tariff.total_price(cur_slot.spot) if cur_slot else 1.0
@@ -822,14 +849,14 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             lo = climate.attributes.get("min_temp")
             hi = climate.attributes.get("max_temp")
             if lo is not None:
-                want = max(want, float(lo))
+                want = max(want, _as_float(lo, want))
             if hi is not None:
-                want = min(want, float(hi))
+                want = min(want, _as_float(hi, want))
         else:
             return
 
         cur = climate.attributes.get("temperature")
-        cur_val = float(cur) if cur is not None else None
+        cur_val = _as_float_or_none(cur)
 
         # 1. Dödband: Om börvärdet redan matchar (mindre än 0.4°C skillnad), gör ingenting
         if cur_val is not None and abs(cur_val - want) < 0.4:
@@ -850,10 +877,11 @@ class SmartGridFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         user_override = self._force_opt
 
         # Säkerhetsingrepp om innetemperaturen avviker kraftigt från komfortmålet:
-        t_in = self._num(self.cfg.get(CONF_INDOOR_TEMP))
+        t_in_val = self._num(self.cfg.get(CONF_INDOOR_TEMP))
+        t_in_num = _as_float_or_none(t_in_val)
         emergency = False
-        if t_in is not None and hvac in ("heat", "heat_cool", "auto") and not is_away:
-            if float(t_in) < cfg.comfort_min - 1.0 and cur_val is not None and want > cur_val:
+        if t_in_num is not None and hvac in ("heat", "heat_cool", "auto") and not is_away:
+            if t_in_num < cfg.comfort_min - 1.0 and cur_val is not None and want > cur_val:
                 emergency = True
 
         # Om det inte är ny timme, användarändring eller nödläge:
